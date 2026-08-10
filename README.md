@@ -80,24 +80,6 @@ UrjaNiyam/
 - pip / virtualenv
 - Jupyter (for EDA and notebooks)
 
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/your-org/UrjaNiyam.git
-cd UrjaNiyam
-
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the baseline solver on a sample grid
-python -m csp.run --topology data/processed/sample_grid.json
-```
-
 Data sources and access notes for all datasets used in simulation live in `data/data-sources.md`.
 
 ---
@@ -112,13 +94,6 @@ main                              ← stable, reviewed code only
       └── feature/evaluation-explain/Mehak
 ```
 
-**Rules**
-- No direct pushes to `main`
-- All work goes to your feature branch → PR into `develop` → reviewed → merged to `main`
-- Commit format: `[area] Short description` — e.g. `[csp] Add AC-3 forward checking` or `[eval] Add plan-thrashing metric`
-
----
-
 ## Team
 
 | Name | Role |
@@ -132,17 +107,12 @@ main                              ← stable, reviewed code only
 ## Roadmap
 
 - [x] Phase 0 — Problem scoping, formal proposal, and system architecture
-- [ ] Phase 1 — Problem formalization & literature review *(current)*
-- [ ] Phase 2 — Grid simulation & data pipeline
-- [ ] Phase 3 — CSP solver — baseline (backtracking + AC-3)
-- [ ] Phase 4 — CSP solver — local search + solver comparison
-- [ ] Phase 5 — Rolling-horizon replanning loop
-- [ ] Phase 6 — Constraint-relaxation cascade
-- [ ] Phase 7 — A* baseline & fairness metric
-- [ ] Phase 8 — Evaluation harness (scalability, thrashing, relaxation frequency)
-- [ ] Phase 9 — LLM explanation layer
-- [ ] Phase 10 — Scaling analysis & report writing
-- [ ] Phase 11 — Buffer, polish, demo prep
+- [ ] Phase 1 — Problem & data foundation *(current)*
+- [ ] Phase 2 — Grid simulation & scenario generation
+- [ ] Phase 3 — CSP solver development (backtracking + AC-3, min-conflicts, greedy baseline)
+- [ ] Phase 4 — Rolling-horizon replanning & constraint-relaxation cascade
+- [ ] Phase 5 — Evaluation, fairness & explainability (A*, scalability, thrashing, LLM layer)
+- [ ] Phase 6 — Final analysis, report writing & demo preparation
 
 ---
 
