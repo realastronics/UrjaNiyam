@@ -4,31 +4,8 @@
 
 UrjaNiyam is a decision-support system for power-grid load shedding. Given a predicted shortfall and a grid's feeders (loads, priority classes, shedding history), it computes which feeders to cut, in what order, and for how long — treating the decision as a Constraint Satisfaction Problem, so hospitals and water systems are never cut, no single area is unfairly targeted, and disruption is minimized. An LLM layer explains the resulting schedule in plain language; it never makes the decision itself.
 
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Branch Strategy](#branch-strategy)
-- [Team](#team)
-- [Roadmap](#roadmap)
-
----
-
-## Overview
-
-| | |
-|---|---|
-| **Type** | AI decision-support system (CSP solver + simulation + LLM explanation layer) |
-| **Language** | Python |
-| **Environment** | Jupyter / CLI, simulation-based (no live grid connection) |
-| **Status** | In development — Phase 1 |
-
----
+### Overview 
+AI based decision-support system (CSP solver + simulation + LLM explanation layer) |
 
 ## Features
 
