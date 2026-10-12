@@ -128,17 +128,28 @@ Control loop, stated explicitly (this is the part the original diagram omits ent
 
 # **6. Data and Simulation Plan**
 
-Real discom-level operational data (which feeders were cut, when, and why) is generally not public, so the plan combines confirmed public demand/shortfall sources with a synthetic-but-grounded grid topology. Confirmed sources (full field lists, access details, and license terms live in the companion data-sources.md, kept in sync with this section):
+Real feeder-level cut/restore histories are not available in the selected public sources. Use public data to ground demand and shortfall assumptions; keep feeder topology, priorities, downtime histories, and shedding decisions synthetic.
 
-- Grid-India / POSOCO real-time and historical grid operation data - state-wise demand, generation, and frequency data published by the national grid operator; used for realistic demand magnitude and diurnal/seasonal load shape.
-- A Kaggle-hosted multi-state demand/shortage compilation - used to check that our synthetic mild/moderate/crisis shortfall scenarios sit in a realistic range rather than being picked arbitrarily.
-- An hourly state/regional load dataset - used for time-of-day load-curve shape when generating per-feeder synthetic loads.
-- data.gov.in - secondary source for state electricity board statistics, used to cross-check the above rather than as a primary input.
+Primary dataset — Indian state electricity demand (2014–2024)
+- Source: Hunt and Bloomfield, Daily electricity demand data for Indian states (2014–2024), Zenodo. Dataset and downloads · DOI · License: CC BY 4.0.
+- Download these corrected CSVs from the record’s Files section:
+  - corrected_peak_unmet_MW.csv — calibrate shortfall magnitudes.
+  - corrected_peak_met_MW.csv — cross-check peak supply.
+  - corrected_daily_energy_met_MU.csv — daily energy context.
+- These are daily, state-level data, not hourly or feeder-level records. Cite the dataset and retain attribution.
 
-None of these datasets contain feeder-level cut/restore decisions - that data is not public, as noted above. They inform demand magnitude and shortfall realism, not the scheduling decision itself. The grid topology, feeder count, priority classes, and protected-load tagging remain synthetic, constructed to match publicly documented distribution-network structures and clearly labeled as synthetic in the final report - not claimed as real deployment data.
+Official validation and optional context
+- CEA Power Supply Position — Peak: monthly report archive. Download a relevant report and cross-check selected state-level figures against Zenodo.
+- National Power Portal: Demand Met dashboard. Optional: try a previous-date Excel export, and use it only after checking its columns, units, time resolution, and geographic coverage.
+- CEA Load Generation Balance Reports: CEA reports archive. Use only for supplementary planning context.
 
-The scheduler is run under simulated shortfall scenarios of varying severity (mild, moderate, crisis-level), generated from the sources above, to stress-test constraint satisfiability and fairness under increasing pressure. Being upfront that the topology is synthetic-but-grounded is an academic-integrity point and will read as more credible than overclaiming real deployment.
+Simulation method
+1. Store original CSVs in data/raw/zenodo_indian_state_demand/; do not edit raw files.
+2. Inspect columns, dates, units, missing values, and the distribution of zero/non-zero unmet demand.
+3. Define mild, moderate, and crisis shortfall scenarios from observed values using documented thresholds or percentiles. Scale them to the synthetic grid’s total load rather than assigning state-level MW values directly to a 10–500-feeder model. Convert units explicitly (1 MW = 1,000 kW).
+4. Generate synthetic feeder loads, topology, priority/protection tags, downtime history, and changing shortfall inputs. At each replan, the CSP receives the current shortfall; it does not forecast it.
 
+Do not list a Kaggle compilation or hourly state-demand dataset as a confirmed input unless a specific accessible file has been downloaded, inspected, and its license and provenance recorded. Keep data-sources.md limited to sources actually verified, including download date, filename, relevant fields, units, resolution, license, and purpose.
 # **7. Implementation Plan and Timeline**
 
 Revised to fix the structural gap in the original plan: every phase now has a named owner and a concrete, checkable exit criterion, not just a one-line deliverable. Team of three - Person A leads CSP solver implementation, Person B leads architecture/simulation/replanning, Person C leads literature, data, and evaluation - with cross-support noted where a phase leans on more than one person. This reshapes the original 9 rows into 11, since the rolling-horizon loop and the relaxation cascade are now full phases in their own right rather than folded into "fairness metrics."
