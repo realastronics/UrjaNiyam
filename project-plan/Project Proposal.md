@@ -1,251 +1,331 @@
-**Intelligent Load-Shedding Scheduler for Power Grids**
+# Intelligent Load-Shedding Scheduler for Power Grids
 
-# **Executive Brief**
+# Executive Brief
 
-When a power grid can't meet demand - during a heatwavewhere air conditions are running, festival-season spiking, or equipment failure happens, utilities deliberately cut off power to specific areas (commonly known as "load shedding") to avoid risking a total blackout. In most of India today, this is done reactively and manually: an operator picks which feeders to cut, often under time pressure, with no principled way to balance fairness, safety, and minimal disruption.
+When a power grid cannot meet demand, utilities cut power to some areas on purpose. This is called **load shedding**. It happens during heatwaves (air conditioners running), festival-season demand spikes, or equipment failure. The goal is to avoid a total blackout. In most of India today this is done reactively and by hand: an operator picks which feeders to cut, often under time pressure, with no clear method to balance safety, disruption, and practicality.
 
-Here we try building something in that gap, not a forecaster that predicts a suppy shortfall, but a scheduler that decides what to do about one. Given a shortfall size and a grid's feeders (with their loads and priority levels), the system computes which feeders to cut, in what order, and for how long - treating this as a Constraint Satisfaction Problem, such that hospitals and water systems aren't cut, no single area is unfairly targeted, and the total disruption is minimized. A secondary layer uses an LLM strictly for explaining the schedule in plain language, not for making the decision itself. The result is a decision-support system whose logic is transparent, auditable, and demonstrably fairer than ad hoc manual scheduling - built using search, CSP-solving, knowledge representation, and generative AI, which together cover nearly the entire AI course syllabus.
+We build in that gap. We do not build a forecaster that predicts a shortfall. We build a **decision-support tool for the control-room dispatcher**: given a shortfall and a list of feeders (with loads and priority levels), it recommends which feeders to cut, in what order, and for how long. We treat this as a **weighted constraint optimization problem**. The tool also checks that the plan can actually be carried out by field staff (limited switching, minimum cut and restore times).
 
-# **1. Problem Statement**
+The tool is built to be understood, not trusted blindly:
 
-We are given a power shortfall S (kW) that must be resolved over a time horizon T, and a grid modelled as a set of feeders F = {f1, f2, ..., fn}, each with a load capacity, a priority class, and shedding history - determine an assignment of on/off states to each feeder across each time slot in T such that:
+- Every recommendation comes with a plain reason.
+- An independent checker verifies every plan before it is shown.
+- The human operator can always override any decision.
+- Shedding is treated as the **last resort**, after cheaper options such as buying power or asking interruptible industry to cut.
 
-- the shortfall is resolved in every time slot (total shed load ≥ required cut at that time),
-- hard-protected feeders (hospitals, water pumping, emergency services) are last priority to shed,
-- no feeder exceeds a maximum allowed consecutive downtime,
-- the distribution of cuts across feeders satisfies a fairness bound over a rolling window,
-- the total "harm" (a weighted cost function over disruption, duration, and priority) is minimized.
+An optional layer can turn the solver's reasons into plain-language text. It never makes decisions.
 
-In plain terms: this is a resource-allocation-under-hard-constraints problem, the same family as exam scheduling, hospital bed allocation, or airline crew scheduling, just applied to something with immediate public-safety consequences and a recognizable failure mode people experience every summer.
+The project uses search, constraint solving, optimization, and (optionally) generative AI.
 
-**Scope note (S is an input, not an output):** S is a live value the scheduler consumes, not something the scheduler computes. It may arrive from a human operator's estimate or, later, from a pluggable forecasting module (Section 10) - either way, the CSP layer treats S as given at each replan cycle and is never responsible for predicting it. If someone asks, "are you also forecasting shortfalls?" - no, forecasting is a separate, well-studied problem we deliberately scope out, and every claim in this document is about the decision layer that runs after S is known.
+---
 
-# **2. Why It Matters**
+# 1. Problem Statement
 
-- It's unsolved at the deployment layer, not the modelling layer. Forecasting demand shortfalls is a well-studied problem (time-series regression, ensemble methods). Deciding what to do about a shortfall - fairly, safely, automatically - is not commonly built, especially not by students, because it requires CSP/search competency rather than just a trained model.
-- The failure modes are real and documented. Manual/rotational load-shedding schedules in Indian discoms are known to produce inequitable outcomes (the same localities repeatedly losing power) and occasionally shed critical infrastructure due to human error under time pressure.
+## 1.1 Who this is for
 
+- **Primary user: the dispatcher.** This is the control-room engineer (discom or SLDC) who decides how much load to shed, which feeders to cut, and for how long, and then issues the instruction. The tool helps this person make a more precise instruction, faster.
+- **Secondary user: the field operator (substation operator or lineman).** This person receives the instruction and flips the switch. In this project, the field operator receives a clear printable table. Their real limits (few switch operations per shift, manual breakers) are built into the model so that plans are executable.
+- **Later, only if results justify it:** automate the field operator's task. This is a stretch goal, and a human confirmation step stays in place.
 
-# **3. Existing Approaches and Their Limitations**
+## 1.2 Scope
 
-| **Approach** | **How it's used today** | **Limitation** |
+- **S is an input, not an output.** The shortfall is a value the scheduler receives. It may come from a human operator's estimate (for example, "reduce 40 MW now") or, later, from a forecasting module (Section 10). The scheduler is never responsible for predicting it.
+- **S is a vector.** S(t) gives the required relief for each time slot in the horizon. The scheduler receives a new S(t) at each replan.
+- **Shedding is the residual.** Before shedding, the dispatcher has other options: buying power, backing down generation, asking interruptible industry to cut, voluntary demand response. The tool takes the shortfall that remains after those options. It shows the operator the amount of other relief it assumed.
+- **What this is:** scheduled, rotational load shedding at hour scale (15-minute slots).
+- **What this is not:** under-frequency load shedding (which acts in seconds), and it does not model network limits (line flows, voltages). Both are out of scope.
+
+## 1.3 The model
+
+**Time.** Slots t = 1..H (for example, 15 minutes each). We plan the whole horizon but commit only the first k slots, then replan.
+
+**Feeders.** Each feeder f has:
+
+- a **priority tier**:
+  - **Flexible (F):** shed first. Example: interruptible industry.
+  - **Normal (N):** standard homes and shops.
+  - **Critical (C):** hospitals, water pumping, emergency services. Shed **last**, and only with explicit operator approval.
+- a **feeder type**: urban, rural, agricultural, industrial, or mixed (a mixed feeder carries a critical consumer and is tagged with its highest tier)
+- consumer count n_f
+- estimated load L_f(t) in each slot (cutting a feeder relieves its **current load**, not its capacity)
+- for agricultural feeders, any **promised supply hours**
+
+**Decision.** x[f,t] = 1 if feeder f is cut in slot t, else 0.
+
+**Hard constraints (must hold in any plan):**
+
+1. **Relief.** Total relief in each slot must cover the shortfall: Σ L_f(t)·x[f,t] ≥ S(t) + safety margin + restoration surge (see below).
+2. **Minimum cut duration and minimum restore duration.** A feeder cannot flip on and off every slot. This is the anti-thrashing rule.
+3. **Switching budget.** A maximum number of breaker operations per feeder and in total per shift.
+4. **Operator overrides.** Any feeder the operator forces to cut or to stay on is fixed.
+5. **Promised supply hours.** Agricultural feeders keep their promised hours on.
+6. **Critical tier.** No Critical feeder is cut without explicit operator approval.
+
+**Soft constraint (can be relaxed in a stated order):**
+
+- **Maximum consecutive downtime** per feeder (for example, no feeder off more than 3 hours in a row).
+
+**Restoration surge.** When a feeder comes back after an outage, its load is higher than before (motors, ACs, and pumps start together). Load in the first slot after restore is L_f(t) × (1 + r_f), where r_f grows with outage length. This is added to the required relief in that slot.
+
+**Uncertain load.** L_f(t) is an estimate. We add a safety margin to S(t) and test what happens when real load differs by 10-20%.
+
+**Objective (what we minimize):**
+
+```
+total harm  =  Σ over feeders and slots  [ tier_weight × time_of_day_weight × consumers × (1 + β × (r − 1)) ]
+             +  λ × overshoot        (cutting more than needed)
+             +  μ × switch operations
+```
+
+- r is how many slots in a row the feeder has already been off. Each extra hour of continuous outage hurts more than the previous one (convex harm). This makes cuts rotate across feeders without a fairness rule.
+- Tier weights are policy inputs set by the operator. Critical weights are very large. The tool does not decide whose pain counts more.
+- Time-of-day weights let a night cut cost more than a noon cut. Exam and irrigation hours can be added.
+
+**What the tool reports (no fairness claim):**
+
+- total harm
+- shed energy (kWh)
+- cut-hours per feeder (mean and maximum, shown as plain numbers)
+- longest outage
+- number of switch operations
+- overshoot
+- thrashing rate
+- relaxation magnitude
+- optimality gap
+- solve time
+
+In plain terms: this is a resource-allocation-under-constraints problem, in the same family as exam scheduling, hospital bed allocation, or airline crew scheduling, but applied to something with immediate public consequences and a failure people experience every summer.
+
+---
+
+# 2. Why It Matters
+
+- **The decision step is often manual.** Forecasting shortfalls is widely studied. Deciding what to cut, in what order, under switching limits is commonly done by hand under time pressure in Indian discoms. (Citations from regulator documents and news reports to be added in Phase 1.)
+- **Mistakes under pressure are plausible.** Rotation that repeats on the same areas, and critical feeders cut by error, are reported problems. (To be supported with citations before submission.)
+- **A shortfall tool can also say "don't shed."** Because it works on the residual after cheaper options, it can show the operator when buying power or asking industry to cut is the better move.
+
+---
+
+# 3. Existing Approaches and Their Limitations
+
+| **Approach** | **How it's used today** | **Limitation (for our purpose)** |
 |---|---|---|
-| Manual rotational schedules | Discoms publish fixed rotational cut schedules by area/zone, adjusted manually during crises | No optimization, no fairness guarantee, slow to adapt to real-time shortfall changes |
-| Pure ML forecasting systems | Predict demand/shortfall using regression/ensemble models | Stops at prediction — leaves the actual allocation decision to a human, which is the harder and more consequential half of the problem |
-| Greedy heuristic shedding (used in some SCADA systems) | Cut largest non-critical loads first until shortfall resolved | Ignores fairness over time, can systematically over-target a few large feeders, doesn't reason about future shortfalls in the same episode |
-| Commercial DERMS/ADMS platforms | Some advanced distribution management systems do use optimization | Proprietary, expensive, opaque — not something available for utilities in constrained-resource settings, and not something whose internal logic is publicly documented or explainable |
-| Academic CSP-scheduling literature (exam timetabling, hospital bed allocation, airline crew scheduling) | Establishes the constraint-modeling patterns — hard/soft constraints, fairness bounds, relaxation ordering — this project draws on | Solves for a fixed resource set over a fixed horizon; none of the classic formulations assume a live, updating input (a shortfall that changes mid-episode) or require rolling-horizon replanning, which is the gap our system's control loop is built to cover |
+| Manual rotational schedules | Discoms publish fixed cut schedules by area, adjusted by hand in a crisis | Slow to adapt when the shortfall changes; no systematic way to compare options |
+| Forecasting systems (regression, ensembles) | Predict demand or shortfall | Stop at prediction; the allocation decision is left to a human |
+| Greedy heuristic shedding | Cut the largest non-critical loads first until the shortfall is covered | Simple and fast, but ignores outage length, switching limits, and future slots |
+| Commercial DERMS/ADMS platforms | Some advanced distribution systems include optimization | We have not evaluated them; their internal logic is not available to us, so we cannot compare against it |
+| Optimal load shedding in power-systems research | Mathematical optimization, usually network-based (power-flow) formulations | Network-focused and mathematically heavy; not built for a readable, operator-facing feeder schedule |
+| Constraint-based scheduling (exam timetabling, bed allocation, crew scheduling), constraint hierarchies, weighted CSPs, dynamic CSPs, rolling-horizon (MPC-style) scheduling | Established methods for hard/soft constraints, ordered relaxation, and repeated replanning | General methods. We **use** them. We do not claim to have invented them |
 
-The gap: a transparent, constraint-based, fairness-aware scheduler that can be built, explained, and reasoned about with off-the-shelf CSP-solving techniques - this is exactly what's missing between "we have a forecast" and "we have a fair, safe, automated response."
+**The gap we address:** an open, readable, feeder-level scheduler for hour-scale rotational shedding that (a) includes real field limits, (b) is checked by an independent verifier, (c) is measured against an exact optimum, and (d) keeps the human in control.
 
-# **4. Our Contribution**
+*Note: key references to be added and verified in Phase 1 (for example Dechter, "Constraint Processing"; Borning et al. on constraint hierarchies; Bistarelli et al. on semiring-based and weighted CSPs; literature on optimal load shedding and rolling-horizon control; CERC/SLDC material on the deviation settlement mechanism).*
 
-We are building the decision layer that sits between "we know we're short by X kW" and "here is a fair, safe, auditable plan to fix it" - the layer that manual scheduling and commercial DERMS platforms either skip or hide. 
+---
 
-Four deliverables, each independently gradable and independently demo-able:
+# 4. Our Contribution
 
-1. A working CSP-based scheduler with two solving strategies, benchmarked against each other. Backtracking + arc-consistency and min-conflicts local search, both implemented from scratch (not via an off-the-shelf CSP library, so the constraint-propagation logic is ours to explain). Evaluated on synthetic grid topologies at increasing scale (feeder count × time horizon), reporting solve time, solution quality, and - critically - how each behaves as the problem becomes infeasible.
-2. A defined, tested constraint-relaxation policy for infeasible shortfalls. When the shortfall is too large to resolve without violating a soft constraint, the system relaxes constraints in a stated order (fairness bound first, then max-downtime, never the protected-feeder rule) and reports exactly what was relaxed and why. This is the piece that turns "solves the textbook version of the problem" into "handles the version that actually happens during a heatwave," and it's original - none of the reference systems in our related-work review expose this.
-3. A fairness metric reported as a first-class output, not a footnote. Gini coefficient or max-to-mean ratio of cut-time across feeders over a rolling window, computed automatically every replan cycle and logged alongside the schedule - so fairness is something we can plot over a semester of simulated operation, not a claim we make once.
-4. A rolling-horizon replanning loop, not a single-shot solve. The scheduler re-solves as shortfall data updates, using the downtime ledger from prior cycles as a live constraint input. This is what makes the fairness-over-time and max-consecutive-downtime constraints real rather than theoretical, and it's the architectural piece that separates this from a homework-scale CSP demo.
-5. An LLM explanation layer (optional) that is read-only and evidence-grounded. It answers operator queries ("why was Sector 12 cut before Sector 9?") strictly by querying the solver's constraint trace and the relaxation log - it never sees or influences the decision. We will demonstrate this boundary explicitly (e.g., by showing the LLM cannot produce an answer that isn't traceable to a logged constraint), which is the actual interpretability contribution, not just "we added a chat interface."
+We build the decision layer between "we know we're short by X kW" and "here is a safe, executable, explainable plan." We claim the **application, the field-informed model, and the evaluation**. We do not claim novelty of the underlying mechanisms.
 
-What we are explicitly not claiming: we are not predicting shortfalls (that's a separate, well-studied forecasting problem we treat as an input), and we are not building a production-grade SCADA integration - the actuation layer is a realistic simulation with confirmable success/failure states, not a live grid connection.
+**Four deliverables, each independently demo-able:**
 
-# **5. System Architecture**
+1. **Model, simulator, verifier, and metrics.**
+   A formal model in code (feeders, tiers, slots, constraints, harm), a synthetic grid generator, a scenario generator grounded in public data, an **independent verifier** that checks every schedule against the hard constraints, and a metrics module. Evaluation exists from day one.
+
+2. **Solver benchmark with optimality gaps and a scale sweep.**
+   Three solvers, all written from scratch:
+   - a **greedy baseline** (rank feeders by harm per kW of relief, cut down the list, respecting the same rules)
+   - **branch-and-bound with bounds propagation** (an exact method; bounds propagation tightens limits on the relief sum and the outage-length rules)
+   - **weighted min-conflicts local search** (fast and approximate)
+
+   **CP-SAT (Google OR-Tools) is used only as an "answer key"** to compute the best known solution, so we can say "our solver is within X% of optimal." Our solvers do not use it. A cheap **feasibility check** runs first (is there enough sheddable load to meet S(t) in every slot?). Local search only runs on feasible cases. We test feeder counts 10 → 50 → 200 → 500 and report where each solver starts to struggle.
+
+3. **Relaxation ladder with measured severity.**
+   When no plan satisfies everything, the tool relaxes rules in a fixed order and reports what it relaxed and by how much:
+   1. relax **maximum consecutive downtime**
+   2. cut **Critical** feeders, **only with explicit operator approval**
+   3. **ESCALATE**: report the remaining shortfall to the human; do nothing automatically
+
+   Severity is measured as a **magnitude** (for example, how many extra hours beyond the downtime limit), not just on/off.
+
+4. **Rolling-horizon replanning with human control.**
+   The scheduler replans on a fixed cadence or when the shortfall changes by more than a threshold. It uses the downtime ledger from earlier cycles, the switching budget, and restoration surge. The **operator can force-cut or force-keep any feeder at any time**, and the tool replans around that and logs it. If a feeder fails to trip, that becomes new input and the tool replans. We measure plan **thrashing** and the **cost of operator overrides** (extra harm caused by forcing a decision).
+
+**Optional (not one of the four):** a plain-language explanation layer.
+- The **solver** computes the reason for each cut (which constraints were binding, and the cost of the best alternative). For example: "Feeder 12 was cut because it had the lowest harm per kW and was last cut 6 hours ago."
+- An LLM may optionally rewrite those reasons as sentences. It never sees or influences decisions, and it can say nothing that is not in the solver's reason log.
+- The project works fully without any LLM.
+
+**What we do not claim:**
+
+- We do not predict shortfalls.
+- We do not claim a fairness guarantee (see Section 9).
+- We do not claim novelty of relaxation hierarchies, constraint optimization, or rolling-horizon planning.
+- We do not build a production SCADA integration. Actuation is a simulation with success and failure states.
+
+---
+
+# 5. System Architecture
 
 ```mermaid
 flowchart TD
 
-    GSS["GRID STATE STORE<br/>
-    Feeders • topology • load history • live shortfall • downtime ledger<br/>
-    <b>Single source of truth</b> — append-only / event-sourced"]
+    OP["OPERATOR CONSOLE<br/>Enter shortfall S(t) and other relief already arranged<br/>Approve, force-cut, force-keep, or stop at any time<br/><b>Human always has final control</b>"]
 
-    PS["POLICY STORE (declarative)<br/>
-    Protected feeders • fairness bound • max-downtime<br/>
-    Harm-cost weights • versioned • editable without code"]
+    GS["GRID STATE<br/>Feeder table: tier, type, consumers, load estimates<br/>Downtime ledger • switch counts • promised hours"]
 
-    CC["CONSTRAINT COMPILER<br/>
-    State + policy → CSP instance<br/>
-    Variables = feeder × time-slot<br/>
-    Domains = {on, off}"]
+    PL["POLICY FILE<br/>Tier weights • time-of-day weights<br/>Max downtime • min cut/restore • switch budget • safety margin"]
 
-    subgraph SOLVER["SOLVER ORCHESTRATION LAYER"]
-        BT["Backtracking<br/>+ Arc-Consistency"]
-        MC["Min-Conflicts<br/>Local Search"]
-        AST["A*<br/>Baseline"]
-        AP["Arbitration Policy<br/><br/>
-        Select solver by problem size / time budget<br/>
-        Infeasibility → relax constraints:<br/>
-        Fairness → Max-downtime → Non-critical priority<br/>
-        <b>NEVER relax protected-feeder rule</b>"]
+    CC["CONSTRAINT COMPILER<br/>State + policy + S(t) → optimization problem<br/>Variables = feeder × time-slot, values 0 or 1"]
 
-        BT --> AP
-        MC --> AP
-        AST --> AP
+    FC["FEASIBILITY CHECK<br/>Is there enough sheddable load in every slot?"]
+
+    subgraph SOLVERS["SOLVERS - written from scratch"]
+        G["Greedy<br/>baseline"]
+        BB["Branch-and-bound<br/>+ bounds propagation"]
+        MC["Weighted<br/>min-conflicts"]
     end
 
-    SCHED["COMPUTED CUT SCHEDULE<br/>
-    Feeder • time-slot • duration<br/>
-    Relaxed constraints + reasons"]
+    RL["RELAXATION LADDER<br/>1. Relax max downtime<br/>2. Cut Critical feeders, only with approval<br/>3. ESCALATE with remaining shortfall"]
 
-    ACT["ACTUATION LAYER<br/>
-    Issue cut/restore commands<br/>
-    Confirm execution or flag failure"]
+    CAND["CANDIDATE SCHEDULE<br/>Feeder • slot • action • reason code"]
 
-    EVAL["EVALUATION LAYER<br/>
-    Fairness • harm-cost • solver comparison<br/>
-    Constraint audit trail"]
+    VER["INDEPENDENT VERIFIER<br/>Small, simple checker<br/>Rejects any plan that breaks a hard rule"]
 
-    LLM["LLM EXPLANATION LAYER<br/>
-    Read-only natural-language Q&A<br/>
-    Grounded in audit trail<br/>
-    Cannot alter decisions"]
+    ACT["ACTUATION (SIMULATED)<br/>Issue cut/restore<br/>Confirm success or flag failure"]
 
-    GSS --> PS
-    GSS --> CC
-    PS --> CC
-    CC --> SOLVER
-    AP --> SCHED
-    SCHED --> ACT
-    SCHED --> EVAL
+    EV["EVALUATION<br/>Harm • gap to optimum • thrashing<br/>Relaxation magnitude • override cost"]
 
-    ACT --> GSS
-    EVAL --> GSS
+    OR["CP-SAT ORACLE<br/>Offline only, used for scoring<br/>Never in the decision path"]
 
-    EVAL --> LLM
-    GSS --> LLM
+    EXP["EXPLAINER (optional)<br/>Reason codes from the solver<br/>Optional LLM rewrites text, read-only"]
+
+    OP --> CC
+    GS --> CC
+    PL --> CC
+    CC --> FC
+    FC --> SOLVERS
+    SOLVERS --> RL
+    RL --> CAND
+    CAND --> VER
+    VER --> OP
+    OP --> ACT
+    ACT --> GS
+    CAND --> EV
+    OR -.-> EV
+    CAND --> EXP
 ```
 
-Control loop, stated explicitly (this is the part the original diagram omits entirely): the system doesn't run once. It replans on a fixed cadence (e.g., every 5-15 simulated minutes) or whenever the shortfall changes by more than a threshold. Each replan reads the current downtime ledger from the Grid State Store, so a feeder that was just cut isn't immediately eligible to be cut again unless the constraint allows it - this is what actually enforces the fairness-over-a-rolling-window requirement, and it can't be enforced by a single-shot pipeline.
+**Control loop, stated plainly.** The system does not run once. It replans every 5-15 simulated minutes, or whenever the shortfall changes by more than a threshold. Each replan reads the downtime ledger, so a feeder just cut is not casually cut again. Every plan passes the independent verifier before the operator sees it. The operator can approve, change, or override it. Actuation results (including failures) feed back into the grid state.
 
-## Agent framing (PEAS):
+**Why the verifier matters.** The solvers are treated as untrusted. A small, simple checker validates every schedule. This is what makes it safe to use fast heuristic solvers.
 
-- Performance measure: minimize weighted harm (disruption × priority × duration) subject to fairness and safety constraints
-- Environment: the grid's current state, live shortfall size, feeder history
-- Actuators: issue cut/restore commands per feeder per time slot
-- Sensors: shortfall magnitude, feeder states, elapsed downtime per feeder
+## Agent framing (PEAS)
 
-# **6. Data and Simulation Plan**
+- **Performance measure:** minimize weighted harm subject to the hard constraints; minimize relaxation when relaxation is needed.
+- **Environment:** the grid's current state, the shortfall vector S(t), feeder history, field limits.
+- **Actuators:** recommended cut/restore instructions to the dispatcher (executed by simulated field operators).
+- **Sensors:** shortfall magnitude, feeder states and load estimates, elapsed downtime per feeder, actuation confirmations.
 
-Real feeder-level cut/restore histories are not available in the selected public sources. Use public data to ground demand and shortfall assumptions; keep feeder topology, priorities, downtime histories, and shedding decisions synthetic.
+---
 
-Primary dataset — Indian state electricity demand (2014–2024)
-- Source: Hunt and Bloomfield, Daily electricity demand data for Indian states (2014–2024), Zenodo. Dataset and downloads · DOI · License: CC BY 4.0.
-- Download these corrected CSVs from the record’s Files section:
-  - corrected_peak_unmet_MW.csv — calibrate shortfall magnitudes.
-  - corrected_peak_met_MW.csv — cross-check peak supply.
-  - corrected_daily_energy_met_MU.csv — daily energy context.
-- These are daily, state-level data, not hourly or feeder-level records. Cite the dataset and retain attribution.
+# 6. Data and Simulation Plan
 
-Official validation and optional context
-- CEA Power Supply Position — Peak: monthly report archive. Download a relevant report and cross-check selected state-level figures against Zenodo.
-- National Power Portal: Demand Met dashboard. Optional: try a previous-date Excel export, and use it only after checking its columns, units, time resolution, and geographic coverage.
-- CEA Load Generation Balance Reports: CEA reports archive. Use only for supplementary planning context.
+Real feeder-level cut and restore histories are not available in the selected public sources. We use public data to ground demand and shortfall assumptions. Feeder topology, priorities, downtime histories, and shedding decisions are synthetic.
 
-Simulation method
-1. Store original CSVs in data/raw/zenodo_indian_state_demand/; do not edit raw files.
-2. Inspect columns, dates, units, missing values, and the distribution of zero/non-zero unmet demand.
-3. Define mild, moderate, and crisis shortfall scenarios from observed values using documented thresholds or percentiles. Scale them to the synthetic grid’s total load rather than assigning state-level MW values directly to a 10–500-feeder model. Convert units explicitly (1 MW = 1,000 kW).
-4. Generate synthetic feeder loads, topology, priority/protection tags, downtime history, and changing shortfall inputs. At each replan, the CSP receives the current shortfall; it does not forecast it.
+## Primary dataset: Indian state electricity demand (2014-2024)
 
-Do not list a Kaggle compilation or hourly state-demand dataset as a confirmed input unless a specific accessible file has been downloaded, inspected, and its license and provenance recorded. Keep data-sources.md limited to sources actually verified, including download date, filename, relevant fields, units, resolution, license, and purpose.
-# **7. Implementation Plan and Timeline**
+- **Source:** Hunt and Bloomfield, *Daily electricity demand data for Indian states (2014-2024)*, Zenodo. License: CC BY 4.0. Cite the dataset and keep attribution.
+- **Files to download from the record's Files section:**
+  - `corrected_peak_unmet_MW.csv` to calibrate shortfall **size and frequency**
+  - `corrected_peak_met_MW.csv` to cross-check peak supply
+  - `corrected_daily_energy_met_MU.csv` for daily energy context
+- These are **daily, state-level** data. They cannot give the shape of S(t) within a day, and they are not feeder-level.
 
-Revised to fix the structural gap in the original plan: every phase now has a named owner and a concrete, checkable exit criterion, not just a one-line deliverable. Team of three - Person A leads CSP solver implementation, Person B leads architecture/simulation/replanning, Person C leads literature, data, and evaluation - with cross-support noted where a phase leans on more than one person. This reshapes the original 9 rows into 11, since the rolling-horizon loop and the relaxation cascade are now full phases in their own right rather than folded into "fairness metrics."
+## Intra-day shape (a known gap)
 
-<table>
-  <colgroup>
-    <col style="width: 25%">
-    <col style="width: 35%">
-    <col style="width: 40%">
-  </colgroup>
-  <thead>
-    <tr>
-      <th>Phase</th>
-      <th>Deliverable</th>
-      <th>Exit Criteria</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>1. Problem formalization &amp; literature review</td>
-      <td>Formal CSP definition; related-work table (industry + academic CSP-scheduling lineage); dataset selection</td>
-      <td>Formal spec reviewed and approved by all 3; <code>data-sources.md</code> lists ≥4 verified, accessible sources</td>
-    </tr>
-    <tr>
-      <td>2. Grid simulation &amp; data pipeline</td>
-      <td>Synthetic grid topology generator; demand/shortfall scenario generator</td>
-      <td>Generator produces valid, protected-feeder-tagged topologies at 10/50/200/500 feeders; scenarios validated against Phase 1 data ranges</td>
-    </tr>
-    <tr>
-      <td>3. CSP solver: baseline (backtracking + AC-3)</td>
-      <td>Solver working end-to-end on small grids</td>
-      <td>100% constraint satisfaction at ≤50 feeders on all test scenarios; solve times logged</td>
-    </tr>
-    <tr>
-      <td>4. CSP solver: local search + comparison</td>
-      <td>Min-conflicts solver, greedy baseline, first runtime/quality comparison</td>
-      <td>Comparison table (solve time + harm-cost) complete across 10/50/200 feeders for all 3 solvers</td>
-    </tr>
-    <tr>
-      <td>5. Rolling-horizon replanning loop</td>
-      <td>Replan loop wired to live downtime ledger, cadence + threshold triggers</td>
-      <td>Replans correctly on both cadence and shortfall-delta threshold; passes a scripted multi-cycle test sequence</td>
-    </tr>
-    <tr>
-      <td>6. Constraint-relaxation cascade</td>
-      <td>Relaxation policy implemented and logged</td>
-      <td>Relaxation fires only when infeasible; order verified (fairness → downtime → priority); protected-feeder rule never relaxed in any test case; every relaxation logged with reason</td>
-    </tr>
-    <tr>
-      <td>7. A* baseline &amp; fairness metric</td>
-      <td>A* single-slot implementation + scope note; fairness metric wired into replan loop</td>
-      <td>A* results labeled explicitly as non-comparable per Section 6; Gini/max-to-mean metric logged automatically every replan cycle</td>
-    </tr>
-    <tr>
-      <td>8. Evaluation harness: scale, thrashing, relaxation</td>
-      <td>Scalability sweep; replanning-stability (thrashing) test; relaxation frequency/severity report</td>
-      <td>Sweep run at 10→500 feeders; thrashing rate measured and reported per scenario tier; relaxation frequency/severity reported per scenario tier</td>
-    </tr>
-    <tr>
-      <td>9. LLM explanation layer</td>
-      <td>Natural-language Q&amp;A grounded in constraint trace</td>
-      <td>LLM answers verified against trace for a sample query set; boundary test shows it cannot answer beyond the logged trace</td>
-    </tr>
-    <tr>
-      <td>10. Scaling analysis &amp; report writing</td>
-      <td>Full comparative write-up; scaling limits documented</td>
-      <td>Draft report covers all 4 deliverables with data from Phases 3–9; reviewed by all 3</td>
-    </tr>
-    <tr>
-      <td>11. Buffer, polish, demo prep</td>
-      <td>GitHub repo finalized, presentation, viva prep</td>
-      <td>Repo runs clean from a fresh clone; presentation rehearsed; each member can defend any section in viva</td>
-    </tr>
-  </tbody>
-</table>
+The Zenodo data cannot tell us how a shortfall rises and falls through a day. Check whether Grid-India daily reports or the National Power Portal export give hourly or 15-minute demand. If not, we use a **documented synthetic evening-peak profile** and say so clearly.
 
-# **8. Evaluation Methodology**
+## Feeder realism
 
-- Correctness: every produced schedule must be validated against all hard constraints (protected loads, shortfall resolution) - report a 100% constraint-satisfaction rate as a baseline sanity check, not a headline result.
-- Solution quality: compare harm-cost across solving strategies for identical scenarios.
-- Fairness: report the chosen fairness metric across strategies and scenarios; explicitly show cases where the "cheapest" schedule is also the least fair, to make the tradeoff visible.
-- Scalability: runtime and solution quality as feeder count increases (10 → 50 → 200 → 500), to identify where backtracking degrades and where local search remains viable.
-- Relaxation-cascade frequency and severity: for each scenario tier (mild/moderate/crisis), report how often the relaxation cascade fires, which constraint tier gets relaxed, and by how much (e.g., how far the schedule falls below the fairness bound when fairness is relaxed). This is now a first-class contribution (Section 4, deliverable #2) and needs its own reported metric, not a passing mention.
-- Replanning stability: measure how often a feeder's on/off state flips between consecutive replan cycles with no corresponding change in shortfall or downtime ledger (plan thrashing) - a documented failure mode in rolling-horizon / MPC-style controllers. Report a thrashing rate per scenario tier and check whether it clusters around planning-window boundaries.
-- Explanation quality (LLM layer, if built): manually verify a sample of explanations against the actual constraint trace to confirm the LLM is not hallucinating justifications.
+- Consumer mix and consumers-per-feeder: from a state regulator tariff order or discom documents.
+- Load profiles by class (residential, commercial, industrial, agricultural, essential): synthetic and documented.
+- Field constraints (switching limits, supply-hour commitments, reliability standards): collected from public sources into `docs/field-constraints.md`. Each entry records its source, and is marked "to be validated by an operator interview when access is possible."
 
-# **9. Risks and Honest Limitations**
+## Official validation and optional context
 
-- Synthetic data risk: results are only as credible as the grid topology's realism - mitigate by grounding parameters in public discom documentation and stating assumptions explicitly.
-- CSP scalability wall: backtracking-based exact solving will likely become impractical well before 500+ feeders - this is expected and should be reported as a finding, not hidden.
-- Replanning instability (plan thrashing): rolling-horizon replanning is a new architectural decision with its own failure mode - a feeder can be toggled on then off across consecutive replan cycles due to boundary effects between planning windows, even when the underlying shortfall hasn't meaningfully changed. Mitigate with hysteresis (e.g., a minimum-state-duration constraint on toggles) and measure it directly via the thrashing metric in Section 9, rather than discovering it during the Week 12 evaluation pass.
-- Scope creep on the LLM layer: it's tempting to expand the LLM component into a bigger feature; resist this - its job is explanation, not decision-making, and expanding its role would undercut the project's core CSP/search contribution.
-- Fairness metric choice is a modeling decision, not a neutral fact - be prepared to justify why you chose Gini coefficient (or whichever metric) over alternatives in the viva.
+- **CEA Power Supply Position (Peak):** download one monthly report and cross-check selected state figures against Zenodo.
+- **National Power Portal, Demand Met dashboard:** optional. Use only after checking columns, units, time resolution, and geographic coverage.
+- **CEA Load Generation Balance Reports:** supplementary planning context only.
 
-# **10. Possible Extensions (Stretch Goals, Not Core Scope)**
+## Simulation method
 
-- Incorporate a real (even simple) forecasting layer from the ML course as a pluggable input, demonstrating the two-course thematic connection without hard-coupling deadlines.
-- Multi-region coordination: extend the CSP to reason across multiple interconnected grid zones with shared shortfall constraints.
-- Reinforcement-learning-based policy as an additional comparison point against the CSP solvers, directly using the ML course's intro-RL unit.
+1. Store original CSVs in `data/raw/zenodo_indian_state_demand/`. Do not edit raw files.
+2. Inspect columns, dates, units, missing values, and the distribution of zero and non-zero unmet demand.
+3. Define **mild, moderate, and crisis** shortfall scenarios from observed values using documented percentiles. Scale them to the synthetic grid's total load rather than assigning state-level MW values directly to a 10-500 feeder model. Convert units explicitly (1 MW = 1,000 kW).
+4. Generate synthetic feeder loads, types, tiers, downtime histories, and changing shortfall inputs. At each replan the scheduler receives the current S(t). It does not forecast it.
+5. Add realism tests: load-estimate error (±10-20%), restoration surge, and actuation failures.
+
+Do not list a Kaggle compilation or hourly state-demand dataset as a confirmed input unless a specific accessible file has been downloaded, inspected, and its license and provenance recorded. Keep `data-sources.md` limited to sources actually verified, including download date, filename, relevant fields, units, resolution, license, and purpose.
+
+---
+
+# 7. Implementation Plan and Timeline
+
+Team of three: **Person A** leads solver implementation, **Person B** leads model, simulation, and replanning, **Person C** leads literature, data, and evaluation. Cross-support is noted where a phase needs more than one person. Each phase has a named owner and a checkable exit criterion.
+
+**Build order principle:** build a thin end-to-end slice first (model, verifier, metrics, greedy, oracle), then add the harder solvers. Evaluation is built from the start, not at the end.
+
+| Phase | Owner | Deliverable | Exit criteria |
+|---|---|---|---|
+| 1. Problem formalization, literature, data selection | C (with A, B) | Formal model write-up; related-work table with real citations; `docs/field-constraints.md` from public sources | Formal spec approved by all 3; `data-sources.md` lists ≥4 verified, accessible sources; every citation checked |
+| 2. Model, verifier, metrics in code | B (A supports) | Data classes (feeder, tier, slot, schedule), `verify(schedule)`, metrics module | Verifier passes hand-made valid cases and rejects hand-made invalid cases for every hard constraint |
+| 3. Grid simulation and data pipeline | B, C | Synthetic grid generator; shortfall scenario generator | Valid tagged grids at 10/50/200/500 feeders; scenarios validated against Phase 1 data ranges |
+| 4. Thin slice: greedy baseline + CP-SAT oracle | A | Greedy solver; CP-SAT oracle; first optimality gap | Gap computed on 10 and 50 feeder grids; every greedy output passes the verifier |
+| 5. Branch-and-bound with bounds propagation | A | Exact solver with feasibility check | Matches the oracle's optimum on all small grids (≤50 feeders); solve times logged |
+| 6. Weighted min-conflicts and solver comparison | A, C | Local search solver; comparison table | Table of solve time, harm, and optimality gap across 10/50/200 feeders for all solvers; verifier passes on all outputs |
+| 7. Relaxation ladder and ESCALATE | B | Ladder implemented and logged | Ladder fires only when infeasible; order verified; Critical feeders never cut without approval in any test; ESCALATE reports the remaining shortfall; every step logged with magnitude |
+| 8. Rolling-horizon loop with field limits and operator control | B (A supports) | Replan loop with ledger, switching budget, restoration surge, force-cut/force-keep, actuation-failure feedback | Replans correctly on cadence and on shortfall change; passes a scripted multi-cycle test; override and failure cases handled and logged |
+| 9. Evaluation harness | C (A, B support) | Scale sweep, thrashing test, load-error test, override-cost test, relaxation severity report | Sweep run 10 → 500 feeders; thrashing, relaxation severity, and override cost reported per scenario tier |
+| 10. Optional: explainer | A or B | Solver-side reason codes; optional LLM rewrite | Every explanation traces to a logged reason; boundary test shows the LLM cannot produce statements outside the log |
+| 11. Report, buffer, demo | All | Full write-up, repo, presentation | Report covers all 4 deliverables with data from Phases 4-9; repo runs clean from a fresh clone; each member can defend any section in the viva |
+
+---
+
+# 8. Evaluation Methodology
+
+- **Correctness.** Every schedule is checked by the independent verifier against all hard constraints. Report a 100% pass rate as a sanity check, not a headline result.
+- **Solution quality.** Compare harm across solvers on identical scenarios, and report the **optimality gap** against the CP-SAT oracle.
+- **Scalability.** Runtime and gap as feeder count grows (10 → 50 → 200 → 500). Identify where branch-and-bound stops being practical and where local search stays useful. Reaching this limit is a finding, not a failure.
+- **Relaxation ladder.** For each scenario tier (mild, moderate, crisis): how often each rung fires, and the magnitude (for example, hours beyond the downtime limit, kW of Critical load cut, residual shortfall at ESCALATE).
+- **Replanning stability.** Count feeder on/off flips between consecutive replans with no real change in shortfall or ledger (thrashing). Report a rate per scenario tier and check whether it clusters at planning-window boundaries.
+- **Robustness to bad data.** Re-run scenarios with ±10-20% load error. Report how often the plan fails to cover the real shortfall, and how the safety margin changes that.
+- **Cost of operator override.** Force cuts or keeps and measure the extra harm and the extra switching needed.
+- **Harm-weight sensitivity (optional).** Run the same scenarios with different tier or feeder weights (for example, a loss-weighted policy that cuts high-loss feeders more) and show how schedules change. The point is to show the effect of a policy choice. We do not claim to know which choice is right.
+- **Explanation quality (if built).** Check a sample of explanations against the solver's reason log.
+
+---
+
+# 9. Risks and Honest Limitations
+
+- **Synthetic data risk.** Results are only as credible as the synthetic grid. Mitigation: ground parameters in public documents and state all assumptions.
+- **No access to field staff.** Field constraints come from public sources. Mitigation: record every constraint with its source in `docs/field-constraints.md`, and flag each as "needs validation."
+- **Solver scalability wall.** Exact solving will likely become impractical well before 500 feeders. This is expected and reported.
+- **No fairness guarantee.** We removed fairness constraints and fairness metrics. Fairness is hard to define and measure, and the harm of an outage differs by place and person. The convex outage-length cost makes cuts rotate within an episode, but **we do not guarantee equal treatment over days or weeks**, and we do not claim to. The operator sets the weights; the tool does not decide whose outage matters more.
+- **Plan thrashing.** Rolling-horizon replanning can flip a feeder on and off between cycles. Minimum cut and restore durations are built into the model, and thrashing is measured directly.
+- **Rough load data.** Real feeder readings can be late or wrong. We use a safety margin and test against error.
+- **Restoration surge.** Restoring a feeder adds load. Ignoring it makes the plan wrong in the slot after a restore. It is modeled, but surge values are assumptions.
+- **Tool recommending shedding when it isn't needed.** Mitigated by taking the residual shortfall after other relief and showing that assumption to the operator.
+- **Scope creep on the explainer.** It explains. It never decides. Expanding its role would weaken the core contribution.
+- **Overclaiming.** Any claim of novelty or documented failure needs a citation, or it is removed.
+
+---
+
+# 10. Possible Extensions (Stretch Goals, Not Core Scope)
+
+- **Automate the field operator's task**, with human confirmation, once the recommendation layer performs well.
+- **A pluggable forecasting layer** as an input for S(t), without hard-coupling to the scheduler.
+- **Interconnected zones and network structure**: reason across zones with shared shortfall limits (this brings topology back in).
+- **Cross-day equity analysis**: if the project later needs it, study how cuts spread over many days, with a clearly justified definition.
+- **Reinforcement-learning policy** as an extra comparison point against the optimization-based solvers.
+- **Operator-interview validation** of the field constraints, when access is possible.
