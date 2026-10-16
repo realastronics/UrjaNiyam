@@ -18,7 +18,7 @@ We are given a power shortfall S (kW) that must be resolved over a time horizon 
 
 In plain terms: this is a resource-allocation-under-hard-constraints problem, the same family as exam scheduling, hospital bed allocation, or airline crew scheduling, just applied to something with immediate public-safety consequences and a recognizable failure mode people experience every summer.
 
-**Scope note (S is an input, not an output):** S is a live value the scheduler consumes, not something the scheduler computes. It may arrive from a human operator's estimate or, later, from a pluggable forecasting module (Section 11) - either way, the CSP layer treats S as given at each replan cycle and is never responsible for predicting it. If someone asks, "are you also forecasting shortfalls?" - no, forecasting is a separate, well-studied problem we deliberately scope out, and every claim in this document is about the decision layer that runs after S is known.
+**Scope note (S is an input, not an output):** S is a live value the scheduler consumes, not something the scheduler computes. It may arrive from a human operator's estimate or, later, from a pluggable forecasting module (Section 10) - either way, the CSP layer treats S as given at each replan cycle and is never responsible for predicting it. If someone asks, "are you also forecasting shortfalls?" - no, forecasting is a separate, well-studied problem we deliberately scope out, and every claim in this document is about the decision layer that runs after S is known.
 
 # **2. Why It Matters**
 
