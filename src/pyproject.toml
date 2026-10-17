@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loadshed"
+version = "0.1.0"
+description = "Decision-support scheduler for rotational load shedding"
+requires-python = ">=3.11"
+dependencies = ["pyyaml>=6"]          # the model + verifier need nothing else
+
+[project.optional-dependencies]
+data   = ["numpy", "pandas", "matplotlib", "seaborn", "jupyter"]
+oracle = ["ortools"]                  # offline benchmarking ONLY, never imported by src/loadshed
+dev    = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

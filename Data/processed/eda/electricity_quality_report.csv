@@ -1,0 +1,6 @@
+Dataset,Rows,State columns,First date,Last date,Missing cells,Duplicate dates
+Peak met (MW),3955,39,2013-01-01,2024-04-28,9816,55
+Corrected peak met (MW),3955,39,2013-01-01,2024-04-28,9816,55
+Peak unmet (MW),3955,39,2013-01-01,2024-04-28,9839,55
+Daily energy met (MU),3955,39,2013-01-01,2024-04-28,9816,55
+Corrected daily energy met (MU),3955,39,2013-01-01,2024-04-28,9816,55
