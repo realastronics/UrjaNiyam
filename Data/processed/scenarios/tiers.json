@@ -3,14 +3,14 @@
   "unmet_file": "data/raw/zenodo_electricity_MW/peak_unmet_MW.csv",
   "met_file": "data/raw/zenodo_electricity_MW/corrected_peak_met_MW.csv",
   "percentiles": {
-    "mild": 50,
-    "moderate": 90,
-    "crisis": 99
+    "mild": 50.0,
+    "moderate": 75.0,
+    "crisis": 95.0
   },
   "thresholds": {
     "mild": 0.029630583946481912,
-    "moderate": 0.15497869415240528,
-    "crisis": 0.23076923076923078
+    "moderate": 0.06837606837606838,
+    "crisis": 0.2
   },
   "n_observations": 35496,
   "n_dropped_over_cap": 3,
