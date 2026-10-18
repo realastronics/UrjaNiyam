@@ -1,0 +1,26 @@
+{
+  "built_on": "2026-10-18",
+  "unmet_file": "data/raw/zenodo_electricity_MW/peak_unmet_MW.csv",
+  "met_file": "data/raw/zenodo_electricity_MW/corrected_peak_met_MW.csv",
+  "percentiles": {
+    "mild": 50.0,
+    "moderate": 75.0,
+    "crisis": 95.0
+  },
+  "thresholds": {
+    "mild": 0.01818181818181818,
+    "moderate": 0.055442766508801714,
+    "crisis": 0.19993099874114661
+  },
+  "n_observations": 8271,
+  "n_dropped_over_cap": 0,
+  "year_from": 2019,
+  "year_to": null,
+  "max_ratio": 0.5,
+  "excluded_columns": [
+    "Total",
+    "AMNSIL",
+    "Damodar Valley Corporation"
+  ],
+  "n_state_columns": 36
+}
