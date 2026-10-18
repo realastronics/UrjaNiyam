@@ -145,3 +145,10 @@ def test_missing_and_unknown_feeders():
     cut["ZZ"] = Z
     r = verify(problem(), type(s)(cut))
     assert r.rules("hard") == {"MALFORMED"} and len(r.hard) == 2
+
+
+def test_history_run_over_limit_is_not_blamed_on_the_plan():
+    p = problem(history={"N1": FeederHistory(currently_cut=True, run_slots=6)})   # already over limit 4
+    assert verify(p, sched()).soft == []                         # restored at once: nothing the plan did
+    r = verify(p, sched(N1=(1, 0, 0, 0, 0, 0, 0, 0)))            # plan extends it by one slot
+    assert [(v.rule, v.magnitude) for v in r.soft] == [("MAX_DOWNTIME", 3)]   # 7 slots vs limit 4

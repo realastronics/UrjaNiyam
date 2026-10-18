@@ -6,6 +6,9 @@ Rules of this file:
   * It rebuilds everything from the Problem (including each feeder's history)
     and the Schedule. It trusts nothing the solver says about its own output.
 
+Max downtime is soft and counts only runs the PLAN extends (a run already over the limit in history
+and restored at once is not the plan's fault).
+
 Result has three lists:
   hard   - the plan breaks a hard rule. Do not show it to the operator as valid.
   soft   - the plan breaks a soft rule (max downtime). Reported with a magnitude.
@@ -120,6 +123,7 @@ def _check_feeder_timeline(problem: Problem, fid: str, row: tuple[int, ...], res
     prev = 1 if h.currently_cut else 0
     run = h.run_slots              # slots spent in `prev` so far (includes history)
     switches = h.switches_this_shift
+    plan_cut_in_run = False        # did the plan itself cut this feeder in the current run?
 
     for t, cur in enumerate(row):
         if (problem.shift_offset + t) % pol.shift_slots == 0:
@@ -130,7 +134,8 @@ def _check_feeder_timeline(problem: Problem, fid: str, row: tuple[int, ...], res
                 if run < pol.min_cut_slots:
                     _flag(problem, res, MIN_CUT, fid, t, pol.min_cut_slots - run,
                           f"restored after {run} slots, minimum cut is {pol.min_cut_slots}")
-                _soft_downtime(res, pol.max_downtime_slots, fid, t, run)
+                if plan_cut_in_run:
+                    _soft_downtime(res, pol.max_downtime_slots, fid, t, run)
                 restores[t].append((fid, run))
             else:                  # an ON run ends here (feeder cut again)
                 if run < pol.min_restore_slots:
@@ -142,10 +147,13 @@ def _check_feeder_timeline(problem: Problem, fid: str, row: tuple[int, ...], res
                 _flag(problem, res, FEEDER_SWITCH_BUDGET, fid, t, switches - pol.feeder_switch_budget,
                       f"{switches} operations this shift, budget {pol.feeder_switch_budget}")
             prev, run = cur, 1
+            plan_cut_in_run = False
         else:
             run += 1
+        if cur == 1:
+            plan_cut_in_run = True
 
-    if prev == 1:                  # cut run that is still going at the end of the horizon
+    if prev == 1 and plan_cut_in_run:   # cut run still going at the end of the horizon
         _soft_downtime(res, pol.max_downtime_slots, fid, len(row) - 1, run)
 
 
