@@ -63,6 +63,7 @@ class Problem:
     forced_cut: frozenset[tuple[str, int]] = frozenset()    # operator: cut this feeder in this slot
     forced_keep: frozenset[tuple[str, int]] = frozenset()   # operator: keep this feeder ON
     approvals: frozenset[tuple[str, int]] = frozenset()     # operator approves a Critical cut
+    start_slot: int = 0                   # slot-of-day at plan slot 0 (used for time-of-day harm)
 
     def __post_init__(self) -> None:
         H = self.policy.horizon_slots
@@ -93,6 +94,10 @@ class Problem:
         for fid in self.history:
             if fid not in known:
                 raise ValueError(f"history for unknown feeder {fid}")
+
+    def hour_of(self, t: int) -> int:
+        """Clock hour (0-23) of plan slot t."""
+        return ((self.start_slot + t) * self.policy.slot_minutes // 60) % 24
 
     def hist(self, feeder_id: str) -> FeederHistory:
         return self.history.get(feeder_id, FeederHistory())
