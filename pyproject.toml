@@ -7,7 +7,7 @@ name = "loadshed"
 version = "0.1.0"
 description = "Decision-support scheduler for rotational load shedding"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6"]          # the model + verifier need nothing else
+dependencies = ["pyyaml>=6", "numpy"]   # verify.py needs neither; the solvers use numpy
 
 [project.optional-dependencies]
 data   = ["numpy", "pandas", "matplotlib", "seaborn", "jupyter"]

@@ -17,7 +17,7 @@ from evaluation.oracle_cpsat import solve_oracle
 from loadshed import Policy, verify
 from loadshed.metrics import compute_metrics
 from loadshed.sim import build_problem, load_tiers, make_grid, slot_of_day
-from loadshed.solvers import solve_greedy, solve_greedy_sticky
+from loadshed.solvers import solve_bnb, solve_greedy, solve_greedy_sticky
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--policy", default="configs/policy.yaml")
@@ -27,6 +27,7 @@ ap.add_argument("--seeds", type=int, default=5)
 ap.add_argument("--hours", type=int, nargs="+", default=[3, 10, 17, 20])
 ap.add_argument("--time-limit", type=float, default=20.0)
 ap.add_argument("--workers", type=int, default=8)
+ap.add_argument("--bnb-time", type=float, default=20.0, help="time limit for our branch-and-bound; 0 = skip it")
 ap.add_argument("--budget-per-feeder", type=float, default=0.6)
 ap.add_argument("--out", default="data/processed/benchmarks/gap_greedy_vs_oracle.csv")
 a = ap.parse_args()
@@ -50,6 +51,7 @@ for n in a.sizes:
                 best_sched = (s_.schedule if (sv.ok and not sv.soft and sm.total_harm <= gm.total_harm) else g.schedule)
                 o = solve_oracle(p, time_limit_s=a.time_limit, workers=a.workers,
                                  hint=best_sched if (gv.ok or sv.ok) else None)
+                b = solve_bnb(p, time_limit_s=a.bnb_time) if a.bnb_time > 0 else None
                 rows.append(dict(
                     n=n, tier=tier, ratio=round(scen.peak_ratio, 4), seed=seed, hour=hour,
                     greedy_ok=gv.ok, greedy_soft=len(gv.soft), greedy_harm=round(gm.total_harm, 2),
@@ -60,7 +62,11 @@ for n in a.sizes:
                     oracle_harm=None if o.objective is None else round(o.objective, 2),
                     oracle_bound=None if o.best_bound is None else round(o.best_bound, 2),
                     oracle_proven_gap=None if o.gap is None else round(o.gap, 5),
-                    oracle_s=round(o.runtime_s, 2)))
+                    oracle_s=round(o.runtime_s, 2),
+                    bnb_status=None if b is None else b.status, bnb_mode=None if b is None else b.mode,
+                    bnb_harm=None if b is None or b.objective is None else round(b.objective, 2),
+                    bnb_bound=None if b is None or b.lower_bound is None else round(b.lower_bound, 2),
+                    bnb_nodes=None if b is None else b.nodes, bnb_s=None if b is None else round(b.runtime_s, 2)))
     print("done n =", n, flush=True)
 
 out = Path(a.out)
@@ -93,4 +99,28 @@ for n in a.sizes:
         print(f"{n:>4} {tier:<9} {len(r):>4} | {len(proven):>3}/{len(opt):>3}/{len(rel):>3}/{len(inf):>3} | "
               f"{sum(x['greedy_ok'] for x in r):>4}/{len(r):<4} | {sum(x['sticky_ok'] for x in r):>4}/{len(r):<4} | "
               f"{gap_stats(gg, 'gh')} | {gap_stats(ss, 'sh')} | {gap_stats(opt, 'best_harm'):>13} | {st.mean(x['oracle_s'] for x in r):7.2f}")
+
+if a.bnb_time > 0:
+    def med(v):
+        return f"{st.median(v):6.1f}" if v else "   n/a"
+    print("\nBranch-and-bound (ours) and the interval for the best greedy baseline (best-of-2):")
+    print("  vs best found = harm above the best solution anyone found (a LOWER estimate of the true gap)")
+    print("  vs best bound = harm above the best proven lower bound   (an UPPER estimate of the true gap)")
+    print(f"{'n':>4} {'tier':<9} | bnb proven | bnb vs oracle %  (median/max) | best-of-2 gap, median %: vs best found .. vs best bound")
+    for n in a.sizes:
+        for tier in tiers:
+            r = [x for x in rows if x["n"] == n and x["tier"] == tier and x["oracle_mode"] == "strict" and x["bnb_mode"] == "strict"]
+            allr = [x for x in rows if x["n"] == n and x["tier"] == tier]
+            pr = sum(1 for x in allr if x["bnb_status"] == "OPTIMAL")
+            d = [100 * (x["bnb_harm"] - x["oracle_harm"]) / x["oracle_harm"] for x in r
+                 if x["bnb_harm"] is not None and x["oracle_harm"]]
+            lo, hi = [], []
+            for x in allr:
+                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"]) if v]
+                lbs = [v for v in (x["oracle_bound"], x["bnb_bound"]) if v]
+                if x["best_harm"] and ubs and lbs:
+                    lo.append(100 * (x["best_harm"] - min(ubs)) / min(ubs))
+                    hi.append(100 * (x["best_harm"] - max(lbs)) / max(lbs))
+            dtxt = f"{med(d)} / {max(d):6.1f}" if d else "      n/a"
+            print(f"{n:>4} {tier:<9} | {pr:>4}/{len(allr):<5} | {dtxt:<28} | {med(lo)} .. {med(hi)}")
 print("\nwrote", out)

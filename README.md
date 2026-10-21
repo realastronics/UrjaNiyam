@@ -9,7 +9,8 @@ configs/policy.yaml     every tunable number (tiers, limits, switching budgets, 
 src/loadshed/model.py   data types: Feeder, FeederHistory, Problem, Schedule
 src/loadshed/policy.py  loads and validates the YAML
 src/loadshed/metrics.py the objective (harm) every solver and the oracle share
-src/loadshed/solvers/   greedy baselines (plain and sticky); more to come
+src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder),
+                        bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch)
 src/loadshed/verify.py  independent verifier (no solver code, plain loops)
 src/loadshed/sim/       synthetic grid (grid.py), shortfall scenarios (scenarios.py), Zenodo ratios (zenodo.py)
 scripts/                build_scenario_tiers.py -> data/processed/scenarios/tiers.json
@@ -17,7 +18,7 @@ evaluation/             oracle_cpsat.py (CP-SAT answer key, OFFLINE ONLY), run_g
 tests/                  one test per hard rule + history/shift/override cases, grid and data tests
 docs/                   data-sources.md, field-constraints.md (to be written)
 ```
-Planned next: branch-and-bound with bounds propagation, weighted min-conflicts (both in `src/loadshed/solvers/`), `eval/` (CP-SAT oracle lives here, offline only).
+Planned next: weighted min-conflicts local search (`src/loadshed/solvers/`), relaxation ladder, rolling-horizon loop, `eval/` (CP-SAT oracle lives here, offline only).
 
 ## Run
 ```
