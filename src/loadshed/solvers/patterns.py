@@ -116,22 +116,21 @@ def _evaluate(problem: Problem, f: Feeder, rows: list[tuple[int, ...]]) -> Patte
 
 
 def prune_dominated(p: Patterns, eps: float = 1e-9) -> Patterns:
-    """Drop pattern j if another pattern i is no more costly, relieves at least as much in every slot,
-    and switches no more in every slot (so it can never hurt the cover or the system budget)."""
+    """Drop pattern j if a cheaper-or-equal pattern i relieves at least as much in every slot and
+    switches no more in every slot (so it can never hurt the cover or the system budget).
+    Sorted by cost, each pattern is only compared with the still-alive, more expensive ones.
+    (Missing a dominated pattern is harmless; removing a useful one would not be, and cannot happen here.)"""
     order = np.argsort(p.cost, kind="stable")
     p = p.take(order)
     n = len(p)
-    keep = np.ones(n, dtype=bool)
-    for i in range(n):
-        if not keep[i]:
+    alive = np.ones(n, dtype=bool)
+    for i in range(n - 1):
+        if not alive[i]:
             continue
-        dom = ((p.cost[i] <= p.cost + eps) & (p.net[i] >= p.net - eps).all(axis=1)
-               & (p.ev[i] <= p.ev).all(axis=1) & (p.nfev[i] <= p.nfev).all(axis=1))
-        dom[i] = False
-        # if j also dominates i and j came first, j stays (it will have removed i already if it can)
-        back = ((p.cost <= p.cost[i] + eps) & (p.net >= p.net[i] - eps).all(axis=1)
-                & (p.ev <= p.ev[i]).all(axis=1) & (p.nfev <= p.nfev[i]).all(axis=1))
-        back[i:] = False
-        dom &= ~back
-        keep &= ~dom
-    return p.take(np.nonzero(keep)[0])
+        rest = np.nonzero(alive[i + 1:])[0] + i + 1
+        if len(rest) == 0:
+            break
+        dom = ((p.net[i] >= p.net[rest] - eps).all(axis=1)
+               & (p.ev[i] <= p.ev[rest]).all(axis=1) & (p.nfev[i] <= p.nfev[rest]).all(axis=1))
+        alive[rest[dom]] = False
+    return p.take(np.nonzero(alive)[0])
