@@ -49,9 +49,14 @@ class LSResult:
 
 def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int = 0,
                         max_iters: int | None = None, relax_downtime_if_infeasible: bool = True,
-                        sample: int = 6) -> LSResult:
+                        sample: int = 6, force_relaxed: bool = False) -> LSResult:
+    """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
     deadline = t0 + time_limit_s
+    if force_relaxed:
+        r = _search(problem, False, deadline, max_iters, seed, sample)
+        return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
+                        r.iterations, r.restarts, perf_counter() - t0)
     r = _search(problem, True, t0 + 0.7 * time_limit_s, max_iters, seed, sample)
     if r.schedule is None and relax_downtime_if_infeasible:
         r2 = _search(problem, False, deadline, max_iters, seed, sample)

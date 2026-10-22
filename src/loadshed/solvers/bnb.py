@@ -51,10 +51,12 @@ class BBResult:
 
 
 def solve_bnb(problem: Problem, time_limit_s: float = 30.0, node_limit: int | None = None,
-              relax_downtime_if_infeasible: bool = True, lagrange_iters: int = 100) -> BBResult:
+              relax_downtime_if_infeasible: bool = True, lagrange_iters: int = 100,
+              force_relaxed: bool = False) -> BBResult:
+    """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
     deadline = t0 + time_limit_s
-    r = _run(problem, True, deadline, node_limit, lagrange_iters)
+    r = _run(problem, not force_relaxed, deadline, node_limit, lagrange_iters)
     if r.status == "INFEASIBLE" and relax_downtime_if_infeasible:
         r2 = _run(problem, False, deadline, node_limit, lagrange_iters)
         r = BBResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes, 0.0)
