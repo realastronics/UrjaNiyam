@@ -17,7 +17,7 @@ from evaluation.oracle_cpsat import solve_oracle
 from loadshed import Policy, verify
 from loadshed.metrics import compute_metrics
 from loadshed.sim import build_problem, load_tiers, make_grid, slot_of_day
-from loadshed.solvers import solve_bnb, solve_greedy, solve_greedy_sticky
+from loadshed.solvers import solve_bnb, solve_greedy, solve_greedy_sticky, solve_min_conflicts
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--policy", default="configs/policy.yaml")
@@ -28,6 +28,7 @@ ap.add_argument("--hours", type=int, nargs="+", default=[3, 10, 17, 20])
 ap.add_argument("--time-limit", type=float, default=20.0)
 ap.add_argument("--workers", type=int, default=8)
 ap.add_argument("--bnb-time", type=float, default=20.0, help="time limit for our branch-and-bound; 0 = skip it")
+ap.add_argument("--ls-time", type=float, default=10.0, help="time limit for our local search; 0 = skip it")
 ap.add_argument("--budget-per-feeder", type=float, default=0.6)
 ap.add_argument("--out", default="data/processed/benchmarks/gap_greedy_vs_oracle.csv")
 a = ap.parse_args()
@@ -52,6 +53,7 @@ for n in a.sizes:
                 o = solve_oracle(p, time_limit_s=a.time_limit, workers=a.workers,
                                  hint=best_sched if (gv.ok or sv.ok) else None)
                 b = solve_bnb(p, time_limit_s=a.bnb_time) if a.bnb_time > 0 else None
+                ls = solve_min_conflicts(p, time_limit_s=a.ls_time, seed=seed) if a.ls_time > 0 else None
                 rows.append(dict(
                     n=n, tier=tier, ratio=round(scen.peak_ratio, 4), seed=seed, hour=hour,
                     greedy_ok=gv.ok, greedy_soft=len(gv.soft), greedy_harm=round(gm.total_harm, 2),
@@ -66,7 +68,10 @@ for n in a.sizes:
                     bnb_status=None if b is None else b.status, bnb_mode=None if b is None else b.mode,
                     bnb_harm=None if b is None or b.objective is None else round(b.objective, 2),
                     bnb_bound=None if b is None or b.lower_bound is None else round(b.lower_bound, 2),
-                    bnb_nodes=None if b is None else b.nodes, bnb_s=None if b is None else round(b.runtime_s, 2)))
+                    bnb_nodes=None if b is None else b.nodes, bnb_s=None if b is None else round(b.runtime_s, 2),
+                    ls_status=None if ls is None else ls.status, ls_mode=None if ls is None else ls.mode,
+                    ls_harm=None if ls is None or ls.objective is None else round(ls.objective, 2),
+                    ls_iters=None if ls is None else ls.iterations, ls_s=None if ls is None else round(ls.runtime_s, 2)))
     print("done n =", n, flush=True)
 
 out = Path(a.out)
@@ -116,11 +121,35 @@ if a.bnb_time > 0:
                  if x["bnb_harm"] is not None and x["oracle_harm"]]
             lo, hi = [], []
             for x in allr:
-                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"]) if v]
+                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"], x.get("ls_harm")) if v]
                 lbs = [v for v in (x["oracle_bound"], x["bnb_bound"]) if v]
                 if x["best_harm"] and ubs and lbs:
                     lo.append(100 * (x["best_harm"] - min(ubs)) / min(ubs))
                     hi.append(100 * (x["best_harm"] - max(lbs)) / max(lbs))
             dtxt = f"{med(d)} / {max(d):6.1f}" if d else "      n/a"
             print(f"{n:>4} {tier:<9} | {pr:>4}/{len(allr):<5} | {dtxt:<28} | {med(lo)} .. {med(hi)}")
+
+if a.ls_time > 0:
+    def med2(v):
+        return f"{st.median(v):6.1f}" if v else "   n/a"
+    print("\nLocal search (ours, weighted min-conflicts). Positive 'vs best found' = local search used MORE harm than the best solution any solver found.")
+    print(f"{'n':>4} {'tier':<9} | LS vs best found %: median / max | LS gain over best greedy %: median | LS gap interval, median %: vs best found .. vs best bound | LS s")
+    for n in a.sizes:
+        for tier in tiers:
+            allr = [x for x in rows if x["n"] == n and x["tier"] == tier and x["ls_harm"] is not None]
+            if not allr:
+                continue
+            d, gain, lo, hi = [], [], [], []
+            for x in allr:
+                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"], x["ls_harm"]) if v]
+                lbs = [v for v in (x["oracle_bound"], x["bnb_bound"]) if v]
+                if ubs and min(ubs) > 0:
+                    d.append(100 * (x["ls_harm"] - min(ubs)) / min(ubs))
+                if x["best_harm"]:
+                    gain.append(100 * (x["best_harm"] - x["ls_harm"]) / x["best_harm"])
+                if lbs and x["ls_harm"]:
+                    lo.append(100 * (x["ls_harm"] - min(ubs)) / min(ubs) if ubs and min(ubs) > 0 else 0.0)
+                    hi.append(100 * (x["ls_harm"] - max(lbs)) / max(lbs))
+            dtxt = f"{med2(d)} / {max(d):6.1f}" if d else "      n/a"
+            print(f"{n:>4} {tier:<9} | {dtxt:<31} | {med2(gain):>30} | {med2(lo)} .. {med2(hi):<31} | {st.mean(x['ls_s'] for x in allr):5.1f}")
 print("\nwrote", out)
