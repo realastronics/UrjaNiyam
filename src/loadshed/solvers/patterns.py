@@ -134,3 +134,9 @@ def prune_dominated(p: Patterns, eps: float = 1e-9) -> Patterns:
                & (p.ev[i] <= p.ev[rest]).all(axis=1) & (p.nfev[i] <= p.nfev[rest]).all(axis=1))
         alive[rest[dom]] = False
     return p.take(np.nonzero(alive)[0])
+
+
+def build_patterns(problem: Problem, strict: bool) -> list[Patterns]:
+    """Valid, non-dominated patterns for every feeder (in feeder order). A feeder with no valid pattern
+    shows up as an empty Patterns; callers treat that as 'infeasible'. Build once, share between solvers."""
+    return [prune_dominated(enumerate_patterns(problem, f, strict)) for f in problem.feeders]

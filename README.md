@@ -21,13 +21,14 @@ evaluation/             oracle_cpsat.py (CP-SAT answer key, OFFLINE ONLY), run_g
 tests/                  one test per hard rule + history/shift/override cases, grid and data tests
 docs/                   data-sources.md, field-constraints.md (to be written)
 ```
-Planned next: scale sweep to 500 feeders, robustness and thrashing experiments (evaluation/), optional explainer, field validation, `eval/` (CP-SAT oracle lives here, offline only).
+Planned next: run the scale sweep and analyse it, ladder statistics, robustness and thrashing experiments, optional explainer, field validation, `eval/` (CP-SAT oracle lives here, offline only).
 
 ## Run
 ```
 pip install -e ".[dev,data,oracle]"
 pytest
 python scripts/build_scenario_tiers.py      # needs the Zenodo CSVs in data/raw/
+python -m evaluation.run_scale --resume                 # scale sweep (long: run in the background)
 python -m evaluation.run_gap --seeds 2 --hours 10 17   # baselines + our solvers vs CP-SAT oracle (add --sizes 10 50; --ls-time, --bnb-time)
 ```
 `ortools` is installed only with `pip install -e ".[oracle]"` and is never imported from `src/loadshed`.

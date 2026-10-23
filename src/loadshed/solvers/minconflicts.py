@@ -30,7 +30,7 @@ from ..metrics import compute_metrics
 from ..model import Problem, Schedule
 from ..verify import verify
 from .greedy import solve_greedy
-from .patterns import enumerate_patterns, prune_dominated
+from .patterns import build_patterns
 
 TOL = 1e-6
 
@@ -45,30 +45,35 @@ class LSResult:
     iterations: int
     restarts: int
     runtime_s: float
+    setup_s: float = 0.0        # time spent building the valid patterns (not counted in time_limit_s)
 
 
 def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int = 0,
                         max_iters: int | None = None, relax_downtime_if_infeasible: bool = True,
                         sample: int = 6, force_relaxed: bool = False,
-                        warm_start: Schedule | None = None) -> LSResult:
-    """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
+                        warm_start: Schedule | None = None, patterns: list | None = None) -> LSResult:
+    """time_limit_s is the budget for the SEARCH (greedy start and local search); building the valid
+    patterns is reported separately as setup_s. `patterns` = strict-mode patterns already built by
+    build_patterns(problem, True), to share the setup between solvers.
+    force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
-    deadline = t0 + time_limit_s
     if force_relaxed:
-        r = _search(problem, False, deadline, max_iters, seed, sample, warm_start)
+        r = _search(problem, False, time_limit_s, max_iters, seed, sample, warm_start, None)
         return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
-                        r.iterations, r.restarts, perf_counter() - t0)
-    r = _search(problem, True, t0 + 0.7 * time_limit_s, max_iters, seed, sample, warm_start)
+                        r.iterations, r.restarts, perf_counter() - t0, r.setup_s)
+    r = _search(problem, True, 0.7 * time_limit_s, max_iters, seed, sample, warm_start, patterns)
     if r.schedule is None and relax_downtime_if_infeasible:
-        r2 = _search(problem, False, deadline, max_iters, seed, sample, warm_start)
+        spent = perf_counter() - t0 - r.setup_s
+        r2 = _search(problem, False, max(0.3 * time_limit_s, time_limit_s - spent), max_iters, seed, sample,
+                     warm_start, None)
         r = LSResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.start_objective,
-                     r.iterations + r2.iterations, r.restarts + r2.restarts, 0.0)
+                     r.iterations + r2.iterations, r.restarts + r2.restarts, 0.0, r.setup_s + r2.setup_s)
     return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
-                    r.iterations, r.restarts, perf_counter() - t0)
+                    r.iterations, r.restarts, perf_counter() - t0, r.setup_s)
 
 
-def _search(problem: Problem, strict: bool, deadline: float, max_iters: int | None,
-            seed: int, sample: int, warm_start: Schedule | None = None) -> LSResult:
+def _search(problem: Problem, strict: bool, budget_s: float, max_iters: int | None,
+            seed: int, sample: int, warm_start: Schedule | None = None, pats: list | None = None) -> LSResult:
     pol, H = problem.policy, problem.policy.horizon_slots
     feeders = problem.feeders
     n = len(feeders)
@@ -77,16 +82,17 @@ def _search(problem: Problem, strict: bool, deadline: float, max_iters: int | No
     need = np.array([s * (1 + pol.safety_margin) for s in problem.shortfall_kw])
     c0 = -pol.overshoot_lambda * need.sum()
 
-    # ---------------- domains and a cheap necessary feasibility check
-    pats = []
-    for f in feeders:
-        p = prune_dominated(enumerate_patterns(problem, f, strict))
-        if len(p) == 0:
-            return LSResult(None, "INFEASIBLE", mode, None, None, 0, 0, 0.0)
-        pats.append(p)
+    # ---------------- domains (setup, not counted in the time budget) and a cheap necessary feasibility check
+    t_setup = perf_counter()
+    if pats is None:
+        pats = build_patterns(problem, strict)
+    setup_s = perf_counter() - t_setup
+    if any(len(p) == 0 for p in pats):
+        return LSResult(None, "INFEASIBLE", mode, None, None, 0, 0, 0.0, setup_s)
+    deadline = perf_counter() + budget_s
     maxnet = np.array([p.net.max(axis=0) for p in pats])            # (n, H)
     if (maxnet.sum(axis=0) < need - TOL).any():
-        return LSResult(None, "INFEASIBLE", mode, None, None, 0, 0, 0.0)
+        return LSResult(None, "INFEASIBLE", mode, None, None, 0, 0, 0.0, setup_s)
 
     # ---------------- starting point: the greedy baselines
     best_sched, best_obj, start_sched, start_h = None, np.inf, None, np.inf
@@ -254,5 +260,5 @@ def _search(problem: Problem, strict: bool, deadline: float, max_iters: int | No
             Wb = Wb0
 
     if best_sched is None:
-        return LSResult(None, "UNKNOWN", mode, None, start_objective, it, restarts, 0.0)
-    return LSResult(best_sched, "FEASIBLE", mode, float(best_obj), start_objective, it, restarts, 0.0)
+        return LSResult(None, "UNKNOWN", mode, None, start_objective, it, restarts, 0.0, setup_s)
+    return LSResult(best_sched, "FEASIBLE", mode, float(best_obj), start_objective, it, restarts, 0.0, setup_s)

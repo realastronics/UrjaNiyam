@@ -102,3 +102,13 @@ def test_relaxes_max_downtime_only_when_strict_has_no_plan():
     assert r.mode == "relaxed_downtime" and verify(p, r.schedule).rules("soft") == {"MAX_DOWNTIME"}
     easy = solve_min_conflicts(prob8(), time_limit_s=10, seed=0, max_iters=800)
     assert easy.mode == "strict" and verify(prob8(), easy.schedule).ok
+
+
+def test_shared_patterns_give_the_same_plan_and_setup_is_reported_separately():
+    from loadshed.solvers.patterns import build_patterns
+    p = grid_problem(10, "moderate", 0, 17)
+    a = solve_min_conflicts(p, time_limit_s=30, seed=3, max_iters=300)
+    pats = build_patterns(p, True)
+    b = solve_min_conflicts(p, time_limit_s=30, seed=3, max_iters=300, patterns=pats)
+    assert a.schedule == b.schedule and a.objective == b.objective
+    assert a.setup_s > 0 and b.setup_s < 0.05 and a.runtime_s >= a.setup_s

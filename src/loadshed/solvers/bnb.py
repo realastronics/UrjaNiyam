@@ -34,7 +34,7 @@ from ..metrics import compute_metrics
 from ..model import Problem, Schedule
 from ..verify import verify
 from .greedy import solve_greedy
-from .patterns import enumerate_patterns, prune_dominated
+from .patterns import build_patterns
 
 TOL = 1e-6
 
@@ -48,23 +48,31 @@ class BBResult:
     lower_bound: float | None   # proven lower bound on the optimum
     nodes: int
     runtime_s: float
+    setup_s: float = 0.0        # time spent building the valid patterns (not counted in time_limit_s)
 
 
 def solve_bnb(problem: Problem, time_limit_s: float = 30.0, node_limit: int | None = None,
               relax_downtime_if_infeasible: bool = True, lagrange_iters: int = 100,
-              force_relaxed: bool = False, warm_start: Schedule | None = None) -> BBResult:
-    """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
+              force_relaxed: bool = False, warm_start: Schedule | None = None,
+              patterns: list | None = None) -> BBResult:
+    """time_limit_s is the budget for the SEARCH (greedy start, root bound, tree search); building the valid
+    patterns is reported separately as setup_s. `patterns` = strict-mode patterns already built by
+    build_patterns(problem, True), to share the setup between solvers.
+    force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
-    deadline = t0 + time_limit_s
-    r = _run(problem, not force_relaxed, deadline, node_limit, lagrange_iters, warm_start)
+    r = _run(problem, not force_relaxed, time_limit_s, node_limit, lagrange_iters, warm_start,
+             patterns if not force_relaxed else None)
+    setup = r.setup_s
     if r.status == "INFEASIBLE" and relax_downtime_if_infeasible:
-        r2 = _run(problem, False, deadline, node_limit, lagrange_iters, warm_start)
-        r = BBResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes, 0.0)
-    return BBResult(r.schedule, r.status, r.mode, r.objective, r.lower_bound, r.nodes, perf_counter() - t0)
+        r2 = _run(problem, False, time_limit_s, node_limit, lagrange_iters, warm_start, None)
+        r = BBResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes, 0.0,
+                     setup + r2.setup_s)
+    return BBResult(r.schedule, r.status, r.mode, r.objective, r.lower_bound, r.nodes, perf_counter() - t0,
+                    r.setup_s)
 
 
-def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None, lagr_iters: int,
-         warm_start: Schedule | None = None) -> BBResult:
+def _run(problem: Problem, strict: bool, budget_s: float, node_limit: int | None, lagr_iters: int,
+         warm_start: Schedule | None = None, pats: list | None = None) -> BBResult:
     pol, H = problem.policy, problem.policy.horizon_slots
     feeders = problem.feeders
     n = len(feeders)
@@ -72,13 +80,14 @@ def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None
     need = np.array([s * (1 + pol.safety_margin) for s in problem.shortfall_kw])
     c0 = -pol.overshoot_lambda * need.sum()
 
-    # ---------------- domains
-    pats = []
-    for f in feeders:
-        p = prune_dominated(enumerate_patterns(problem, f, strict))
-        if len(p) == 0:
-            return BBResult(None, "INFEASIBLE", mode, None, None, 0, 0.0)
-        pats.append(p)
+    # ---------------- domains (setup, not counted in the time budget)
+    t_setup = perf_counter()
+    if pats is None:
+        pats = build_patterns(problem, strict)
+    setup_s = perf_counter() - t_setup
+    if any(len(p) == 0 for p in pats):
+        return BBResult(None, "INFEASIBLE", mode, None, None, 0, 0.0, setup_s)
+    deadline = perf_counter() + budget_s
     alive0 = [np.ones(len(p), dtype=bool) for p in pats]
     # For the BOUND only: relief above need[t] cannot help cover slot t, so credit at most need[t].
     # (The implied constraint  sum_f clip(net_f[t], 0, need[t]) >= need[t]  holds for every valid plan.)
@@ -147,7 +156,7 @@ def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None
     # ---------------- root: propagate, then Lagrangian multipliers
     root = [a.copy() for a in alive0]
     if not propagate(root):
-        return BBResult(None, "INFEASIBLE", mode, None, None, 0, 0.0)
+        return BBResult(None, "INFEASIBLE", mode, None, None, 0, 0.0, setup_s)
 
     pi = np.zeros(H)
     best_L, best_pi = -np.inf, pi.copy()
@@ -208,7 +217,7 @@ def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None
         if stopped:
             return
         nodes += 1
-        if (node_limit is not None and nodes > node_limit) or ((nodes & 7) == 0 and perf_counter() > deadline):
+        if (node_limit is not None and nodes > node_limit) or perf_counter() > deadline:
             stopped = True
             return
         if not propagate(alive):
@@ -245,8 +254,8 @@ def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None
         sys.setrecursionlimit(old)
 
     if best is None:
-        return BBResult(None, "UNKNOWN" if stopped else "INFEASIBLE", mode, None, root_lb if stopped else None, nodes, 0.0)
+        return BBResult(None, "UNKNOWN" if stopped else "INFEASIBLE", mode, None, root_lb if stopped else None, nodes, 0.0, setup_s)
     obj = compute_metrics(problem, best).total_harm
     if stopped:
-        return BBResult(best, "FEASIBLE", mode, obj, root_lb, nodes, 0.0)
-    return BBResult(best, "OPTIMAL", mode, obj, obj, nodes, 0.0)
+        return BBResult(best, "FEASIBLE", mode, obj, root_lb, nodes, 0.0, setup_s)
+    return BBResult(best, "OPTIMAL", mode, obj, obj, nodes, 0.0, setup_s)

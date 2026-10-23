@@ -83,3 +83,12 @@ def test_infeasible_relaxed_and_approved_cases():
     b3 = solve_bnb(p3)
     assert b3.status == "OPTIMAL" and b3.mode == "relaxed_downtime" and verify(p3, b3.schedule).rules("soft") == {"MAX_DOWNTIME"}
     assert solve_bnb(p3, relax_downtime_if_infeasible=False).status == "INFEASIBLE"
+
+
+def test_shared_patterns_give_the_same_answer_and_setup_is_reported_separately():
+    from loadshed.solvers.patterns import build_patterns
+    p = build_problem(make_grid(10, 0), POL, make_scenario("mild", 0.0296), slot_of_day(17), episode_offset=8)
+    a = solve_bnb(p, node_limit=5)
+    b = solve_bnb(p, node_limit=5, patterns=build_patterns(p, True))
+    assert a.schedule == b.schedule and a.lower_bound == pytest.approx(b.lower_bound)
+    assert a.setup_s > 0 and b.setup_s < 0.05
