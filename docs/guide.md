@@ -1,723 +1,544 @@
 # Urja Niyam: Project Guide
 
-**An intelligent load-shedding scheduler for power grids. A living document.**
+**A load-shedding decision-support system, built as a constraint optimization project for an Artificial Intelligence course.**
 
 | | |
 |---|---|
-| **Purpose of this file** | One place where anyone (a teammate, a professor, an engineer, a first-time reader) can understand *what* we are doing, *why*, *how*, and *how far we have got*. |
-| **Last updated** | 22 October 2026 |
-| **Document version** | 0.1 (first full draft) |
-| **Project status** | Core model, verifier, simulator, two baselines, an exact solver and an answer-key oracle are built and tested (243 automated tests pass). Local search, relaxation ladder, rolling-horizon loop and large-scale evaluation are still to come. |
-| **How this file grows** | Sections marked **[LIVE]** are updated as results arrive. Sections marked **[TO BE FILLED]** are empty on purpose. Add to them when the work is done. |
+| **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
+| **Last updated** | 23 October 2026 (version 0.2) |
+| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, a CP-SAT answer key, the relaxation ladder and the rolling-horizon loop are built. 273 automated tests pass. Large-scale evaluation, robustness experiments, an optional explainer and field validation remain. |
+| **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
 
-> **Honesty rule for this document.** Every number in it comes from something we built and ran. Where something is an assumption, a placeholder, or something we have not verified, it says so. Nothing here is a claim about the real Indian grid that we have not marked as "needs validation".
-
----
-
-## Contents
-
-**Part A: Understanding the problem**
-1. [The problem in a few words](#1-the-problem-in-a-few-words)
-2. [Which layer of the problem we are solving](#2-which-layer-of-the-problem-we-are-solving)
-3. [How load shedding happens (background knowledge)](#3-how-load-shedding-happens-background-knowledge)
-
-**Part B: The project**
-4. [Our idea in one picture](#4-our-idea-in-one-picture)
-5. [The problem written precisely (the model)](#5-the-problem-written-precisely-the-model)
-6. [The data we use, and what the EDA told us](#6-the-data-we-use-and-what-the-eda-told-us)
-7. [Resources and tools used](#7-resources-and-tools-used)
-8. [Repository map](#8-repository-map)
-
-**Part C: The approach**
-9. [Why exact algorithms instead of the common ones](#9-why-exact-algorithms-instead-of-the-common-ones)
-10. [How each algorithm works under the hood](#10-how-each-algorithm-works-under-the-hood)
-11. [How we know the code is correct](#11-how-we-know-the-code-is-correct)
-
-**Part D: Where we are**
-12. [Results so far **[LIVE]**](#12-results-so-far-live)
-13. [Progress tracker **[LIVE]**](#13-progress-tracker-live)
-14. [Decision log](#14-decision-log)
-15. [Assumptions, placeholders and honest limitations](#15-assumptions-placeholders-and-honest-limitations)
-
-**Part E: Alignment and reference**
-16. [How this project maps to the AI course](#16-how-this-project-maps-to-the-ai-course)
-17. [Glossary](#17-glossary)
-18. [How to run everything](#18-how-to-run-everything)
-
-**Part F: Future sections [TO BE FILLED]**
-19. Weighted min-conflicts local search: design and results
-20. Relaxation ladder and ESCALATE: design and results
-21. Rolling-horizon replanning loop: design and results
-22. Scale sweep to 500 feeders and the scalability wall
-23. Robustness tests (load error, thrashing, operator-override cost)
-24. Optional plain-language explainer
-25. Field validation (operator interviews)
-26. Final conclusions and future work
-
-[Change log](#change-log)
+Sections marked **[LIVE]** change as results arrive.
 
 ---
 
-# Part A: Understanding the problem
+## 1. The problem, and the slice of it we solve
 
-## 1. The problem in a few words
+### 1.1 The problem
 
-Sometimes a power grid cannot supply everything people want to use. When that happens, the utility **deliberately switches off the power to some areas for a while** so that the whole grid does not collapse. This is called **load shedding**.
+When a power grid cannot supply everything people want to use, the utility switches off some areas on purpose for a while. This is **load shedding**. Without it, the grid can collapse entirely.
 
-In most of India, the person in the control room decides *which areas to switch off, in what order, and for how long* mostly by hand and under time pressure. There is no systematic way to make that decision while balancing:
+The person in the control room has to decide *which feeders to cut, in what order, and for how long*. In India this is mostly done by hand, under time pressure. Four things have to be balanced at once: protect critical services (hospitals, water pumping), keep any one area from suffering long outages, respect the limits of the field staff who flip the switches, and keep total disruption low.
 
-- **Safety:** hospitals and water pumping should be the last to lose power.
-- **Fairness of pain:** an area should not sit in the dark for six hours when others could share the burden.
-- **Practicality:** the staff who flip the switches can only do so many operations per shift.
-- **Minimum total disruption.**
+**Our tool recommends that decision.** The dispatcher gives it the shortfall ("we are short by X kW for the next hours"). It returns a plan that obeys every rule, with the reasons. The human can always override.
 
-**Our project builds a tool that helps the control-room person make that decision:** given "we are short by X kilowatts for the next few hours", it recommends which feeders to cut and when, checks that the plan obeys every rule, and explains why. A human always keeps the final say.
+### 1.2 Which layer of power-system operation this is
+
+| Layer | Time scale | Ours? |
+|---|---|---|
+| Demand and shortfall **forecasting** | days to hours | **No.** A separate, well-studied machine-learning problem. We take the shortfall as an *input*. |
+| **Rotational load shedding** | **hours, in 15-minute steps** | **Yes.** Given a shortfall, which feeders do we cut and when? |
+| Emergency under-frequency shedding | seconds | No. Automatic relays do this. |
+| Network physics (line flows, voltage) | milliseconds to seconds | No. We do not model the network. |
+
+**Why this layer.** Forecasting asks "how short will we be?". Nobody has to *decide* anything from a forecast until the shortfall is known. The decision step is the harder half, it can be formulated precisely, and it is exactly where constraint-solving techniques apply. Staying out of forecasting also keeps this a search-and-optimization project rather than a machine-learning one.
+
+### 1.3 Who the tool is for
+
+The **dispatcher** (control-room engineer) is the primary user, because the dispatcher's judgment is the hard part and the field operator only executes it. The tool must still produce plans a field operator can carry out, so the operators' limits are inside the model. Automating the field step comes later, only if the recommendations prove good, and it would keep a human confirmation.
+
+### 1.4 What real-world practice forces into the model
+
+> **Source note.** This is general background plus public material. We could not reach grid staff, so every item is listed in `docs/field-constraints.md` as "needs validation by an operator". Treat these as plausible, not confirmed.
+
+| Real-world fact | How the model handles it | Why |
+|---|---|---|
+| Shedding is a last resort; operators first buy power, back down generation, or ask interruptible industry to cut | The tool takes the **remaining** shortfall after those steps; industry-like feeders are the cheapest tier | Buying 50 MW for two hours may be kinder than cutting homes |
+| Hospitals and water pumping should be shed last | **Critical tier**: shed last, and only with explicit operator approval | Matches practice and keeps the human in charge |
+| Farm feeders get promised supply hours | **Promised supply windows** are a hard rule | Cutting them breaks a commitment |
+| A feeder restored after a long cut pulls extra load (motors, ACs, pumps start together) | **Restoration surge** is added to the required relief | Without it, "shortfall covered" is false in the slot after a restore |
+| Breakers cannot flip every 15 minutes; staff do few operations per shift | **Minimum cut/restore durations** and **switching budgets** | The plan must be executable |
+| Meter readings are rough or late | A **safety margin** on the shortfall | Insurance against estimate error (its price is measured in section 8) |
+| Hospitals sit on feeders shared with thousands of homes | A feeder is tagged with its **highest tier** | Protection is a property of the whole feeder |
+| Operators override plans for reasons the tool cannot see | **Force-cut and force-keep** are inputs; the tool replans around them | The human always has the last word |
+| Some discoms cut high-loss feeders more | We do not decide this. Tier and harm weights are **policy inputs** | It is a value judgment, not a computation |
 
 ---
 
-## 2. Which layer of the problem we are solving
+## 2. Turning the problem into a constraint optimization problem
 
-Power systems are managed at several time scales. Our project works at one of them.
+### 2.1 The vocabulary we use
 
-| Layer | Time scale | Question | Who does it | Our project? |
-|---|---|---|---|---|
-| Long-term planning | years | How much power plant capacity do we build? | Planners | No |
-| **Demand/shortfall forecasting** | days to hours | How short will we be tomorrow? | Forecasting teams (a well-studied machine-learning problem) | **No.** We take the shortfall as an *input*. |
-| **Rotational load shedding** | **hours (15-minute steps)** | **Given a shortfall, which feeders do we cut, in what order, for how long?** | **Control-room dispatcher** | **Yes. This is our layer.** |
-| Emergency under-frequency shedding | seconds | Automatic relays trip when frequency drops | Protection relays | No |
-| Network physics (line flows, voltage) | milliseconds to seconds | Will the network stay stable? | Network engineers | No |
+A **constraint satisfaction problem (CSP)** has three parts: *variables*, a *domain* of values for each, and *constraints* that rule out combinations. A solution assigns every variable a value without breaking any constraint. A **constraint optimization problem (COP)** adds an *objective* to minimize among the solutions. Constraints that must hold are **hard**; ones that may be given up, at a cost, are **soft**. This is sometimes called a **weighted CSP**.
 
-**In plain words:** we do not predict the shortfall and we do not model the electrical network. We take the sentence *"we must reduce 40 MW for the next four hours"* and turn it into *"cut feeders A, C and F now; swap A for D after two hours; here is why"*.
-
-**Who the tool is for.**
-- **Primary user: the dispatcher** (control-room engineer at a distribution company or state load dispatch centre). This person decides and instructs. Our tool makes that instruction more precise and faster.
-- **Secondary: the field operator** (substation staff who flip the breakers). The plan reaches them as a clear table. Their real limits (how many operations they can do per shift) are built into the model so the plan can actually be carried out.
-- **Later, only if results justify it:** automate the field operator's step, with a human confirmation.
-
----
-
-## 3. How load shedding happens (background knowledge)
-
-> **Source note.** This section is general background plus our reading of public material. It is **not** from interviews with grid staff (we could not reach any yet). Every item is listed in `docs/field-constraints.md` as "needs validation by an operator". Treat details as plausible, not confirmed.
-
-**3.1 The grid in one paragraph.**
-Electricity cannot be stored cheaply at large scale, so at every moment, the power produced must equal the power consumed. Power plants feed a high-voltage network; that network feeds **substations**; each substation feeds several **feeders** (typically 11 kV lines); each feeder serves hundreds or thousands of consumers (homes, shops, farms, factories, hospitals). A feeder is the smallest unit a dispatcher normally switches on or off: cut the feeder and everyone on it loses power.
-
-**3.2 Why a shortfall happens.**
-Common triggers are heatwaves (air conditioners), festival or harvest-season peaks, coal or gas supply problems, equipment failure, and transmission limits. When there is not enough supply, frequency starts to fall, and the utility must reduce consumption quickly.
-
-**3.3 What operators try first.**
-Shedding is a last resort. Typical earlier steps include buying extra power on the exchange, backing down or re-scheduling generation, asking industries on *interruptible tariffs* to reduce, and voluntary demand response. Our tool therefore takes the **remaining** shortfall *after* those steps and tells the operator what to shed. (Often, buying 50 MW for two hours is cheaper and kinder than cutting homes, and a good tool should help show that.)
-
-**3.4 How the cut is carried out in practice.**
-The dispatcher tells a division or substation: "reduce this much". Staff trip the chosen feeders' breakers. Many rural breakers are **manual**, so the number of operations per shift is limited.
-
-**3.5 Real-world details that shape our model.**
-
-| Real-world fact | What we do in the model |
+| CSP idea | In our problem |
 |---|---|
-| Hospitals, water pumping, emergency services should be shed last. | **Critical tier**: shed last and **only with explicit operator approval**. |
-| Farm feeders often have promised supply hours (for example 8 hours a day). | **Promised supply windows** are a hard rule. |
-| Industries on interruptible tariffs can be asked to cut first. | **Flexible tier**: shed first. |
-| Restoring a feeder after a long cut brings a **load surge** (motors, ACs and pumps start together). | **Restoration surge**: restored load is larger than normal, so the plan must cover it. |
-| Breakers cannot be flipped every 15 minutes, and staff do few operations per shift. | **Minimum cut/restore durations** and **switching budgets** (per feeder and system-wide). |
-| Meter readings are rough or late. | **Safety margin** on the shortfall, and (planned) tests with 10-20% load error. |
-| Hospitals sit on feeders shared with thousands of homes. | **Mixed feeders** are tagged with their highest tier. |
-| Politics, exams, festivals: operators override plans. | **The human can always force a cut, force a keep, or overrule the tool.** The tool re-plans around it. |
-| Utilities sometimes cut high-loss (theft, non-payment) feeders more. | Not decided by us: tier and harm weights are **policy inputs** set by the operator. |
+| Variables | `x[f,t]`, one per feeder *f* and 15-minute slot *t* (50 feeders x 16 slots = 800) |
+| Domain | {0 = on, 1 = cut} |
+| Hard constraints | The six rules in 2.2 |
+| Soft constraint | Maximum consecutive downtime |
+| Objective | Minimize total harm (2.3) |
 
----
+Two features of our constraints matter later. First, the key ones are **global**: the relief rule is a sum over *all* feeders in a slot, and the duration rules look at *runs* of consecutive slots. Classic arc consistency (AC-3) works on constraints between *pairs* of variables, so it prunes almost nothing here. We use **bounds propagation on the sums** instead (6.4). Second, most rules involve **one feeder only**. That lets us reformulate the problem (6.3).
 
-# Part B: The project
+### 2.2 The model
 
-## 4. Our idea in one picture
+**Time.** 15-minute slots. We plan 16 slots (4 hours) ahead, **commit only the first**, then replan.
 
-The tool is a pipeline with a **human at the centre** and an **independent checker** before anything reaches the operator.
+**Feeder data.** A priority **tier** (Flexible = shed first, Normal, Critical = shed last), a **type** (urban, rural, agricultural, industrial, mixed), a consumer count, an **estimated load in kW per slot**, and optional promised supply hours. Cutting a feeder relieves its *current load*, not its capacity, which is why load is per slot.
 
-```mermaid
-flowchart TD
-    OP["OPERATOR CONSOLE<br/>Enters shortfall S(t) and other relief already arranged<br/>Approves, forces a cut, forces a keep, or stops at any time"]
-    GS["GRID STATE<br/>Feeder table: tier, type, consumers, load estimates<br/>History: how long each feeder has been on or off, switches used"]
-    PL["POLICY FILE (YAML)<br/>Tier weights, time-of-day weights<br/>Max downtime, min cut/restore, switch budgets, safety margin"]
-    CC["COMPILER<br/>State + policy + shortfall become an optimization problem"]
-    SOLV["SOLVERS (written from scratch)<br/>Greedy baselines | Branch-and-bound | Min-conflicts (planned)"]
-    RL["RELAXATION LADDER (partly built)<br/>1. Relax max downtime<br/>2. Cut Critical feeders, only with approval<br/>3. ESCALATE to the human"]
-    VER["INDEPENDENT VERIFIER<br/>Small, simple checker<br/>Rejects any plan that breaks a hard rule"]
-    ACT["ACTUATION (simulated, planned)<br/>Cut / restore commands, success or failure feedback"]
-    OR["CP-SAT ORACLE<br/>Offline answer key only<br/>Never in the decision path"]
-    EV["EVALUATION<br/>Harm, gap to optimum, thrashing, relaxation size"]
+**History.** For every feeder: is it cut now, how many slots it has been in that state, and how many switches it has used this shift. History is part of the model because the time-based rules mean nothing without it.
 
-    OP --> CC
-    GS --> CC
-    PL --> CC
-    CC --> SOLV
-    SOLV --> RL
-    RL --> VER
-    VER --> OP
-    OP --> ACT
-    ACT --> GS
-    SOLV --> EV
-    OR -.-> EV
-```
+**Hard rules** (a plan that breaks one is rejected):
 
-**The control loop (partly built, to be completed).** The system does not run once. It replans every few simulated minutes, or whenever the shortfall changes. Each replan reads the history, so a feeder just cut is not casually cut again. Only the **first 15-minute slot** of a plan is committed; the rest is tentative and gets recomputed.
+1. **Relief.** In every slot the cut load must cover the shortfall, times a safety margin, plus the restoration surge.
+2. **Minimum cut and minimum restore durations.** No flicking on and off.
+3. **Switching budgets.** A maximum number of breaker operations per feeder and for the whole system, per shift.
+4. **Operator overrides** are obeyed.
+5. **Promised supply hours** hold.
+6. **Critical feeders** are never cut without approval.
 
-**Five design rules that never change.**
-1. **The human is always in control.** Nothing is executed without the operator; the operator can override anything.
-2. **The solver is untrusted.** Every plan passes an independent verifier before it is shown.
-3. **No black boxes.** Every cut should be traceable to a rule and a cost.
-4. **We only claim what we measured.** Claims are about the application and the evaluation, not about inventing new algorithms.
-5. **Policy is data, not code.** Tier weights, limits and budgets live in `configs/policy.yaml`.
+**Soft rule.** **Maximum consecutive downtime**. It is the first thing the ladder gives up (2.4).
 
----
-
-## 5. The problem written precisely (the model)
-
-**5.1 Time.** The planning period is split into **15-minute slots**. We plan **16 slots (4 hours)** ahead, commit only the first slot, then replan.
-
-**5.2 Feeders.** Each feeder has:
-- a **priority tier**: **Flexible** (shed first), **Normal**, **Critical** (shed last, only with approval);
-- a **type**: urban, rural, agricultural, industrial or mixed;
-- a number of **consumers**;
-- an **estimated load in kW for every slot** (cutting a feeder relieves its *current load*, not its capacity);
-- optional **promised supply hours** (farm feeders).
-
-**5.3 The decision.** For every feeder *f* and slot *t*: `x[f,t] = 1` means "cut", `0` means "on". With 50 feeders and 16 slots that is 800 yes/no choices.
-
-**5.4 Hard rules (a plan breaking any of these is rejected).**
-1. **Relief:** in every slot, the load we cut must cover the shortfall (plus a 5% safety margin) **plus the surge** from feeders being restored in that slot.
-2. **Minimum cut duration and minimum restore duration:** no flicking on and off (2 slots = 30 minutes each, placeholder).
-3. **Switching budgets:** at most 3 operations per feeder per shift and 20 system-wide per shift (placeholders; the benchmark scales the system budget with grid size).
-4. **Operator overrides:** forced cuts and forced keeps are obeyed.
-5. **Promised supply hours** on farm feeders.
-6. **Critical feeders** are never cut without explicit operator approval.
-
-Rules 2 and 3 use each feeder's **history** (how long it has been in its current state, how many switches it has used this shift), so the rules hold across replans, not just inside one plan.
-
-**5.5 One soft rule.** **Maximum consecutive downtime** (12 slots = 3 hours, placeholder). "Soft" means it is relaxed only if there is no other way, and the relaxation is reported with a size.
-
-**5.6 The goal: minimum total "harm".** Harm is how much disruption the plan causes:
+### 2.3 The objective: harm
 
 ```
-harm = sum over every cut (feeder, slot) of
-         tier_weight  x  time_of_day_weight  x  consumers  x  (1 + 0.5 x (r - 1))
-       + 0.02 x (kW of relief beyond what was needed)
-       + 1.0 x (number of breaker operations)
+harm = sum over cut (feeder, slot) of  tier_weight x time_of_day_weight x consumers x (1 + 0.5 x (r - 1))
+     + 0.02 x (kW of relief beyond what was needed)
+     + 1.0 x (number of breaker operations)
 ```
-where `r` is how many slots in a row the feeder has already been off, counting this one.
+`r` is how many slots in a row the feeder has already been off, counting this slot.
 
-**Worked example (why rotation appears by itself).** A Normal feeder (weight 5) with 1,000 consumers at time-of-day weight 1.0:
+**Worked example.** A Normal feeder (weight 5) with 1,000 consumers at time-of-day weight 1:
 
-| Slot of the outage (r) | Factor 1 + 0.5(r-1) | Harm that slot |
+| Slot of the outage | Factor | Harm |
 |---|---|---|
 | 1st | 1.0 | 5,000 |
 | 2nd | 1.5 | 7,500 |
 | 3rd | 2.0 | 10,000 |
 | 4th | 2.5 | 12,500 |
 
-One continuous 4-slot outage costs 35,000. Two separate 2-slot outages cost 2 x 12,500 = 25,000. Because harm grows with outage length, the optimizer prefers to **spread** a long need across feeders. We did **not** add a fairness rule to achieve this (see the decision log): rotation is a side effect of the cost, not a promise.
+One 4-slot outage costs 35,000. Two separate 2-slot outages cost 25,000.
 
-**5.7 The relaxation ladder.** If no plan satisfies every rule, the tool relaxes rules in a fixed order and reports what it relaxed and by how much:
-1. relax **maximum downtime** (built into the exact solver and the oracle);
-2. cut **Critical** feeders, **only with explicit operator approval** (the approval mechanism is built; the full ladder logic is planned);
-3. **ESCALATE**: report the remaining shortfall to the human and do nothing automatically (planned).
+**Why convex in outage length.** Each extra hour in the dark hurts more than the last. As a side effect the optimizer prefers to **spread** a long need across feeders, so rotation appears without being demanded.
 
-**5.8 Problem class (course terms).** This is a **weighted constraint satisfaction / constraint optimization problem**: variables (the 800 yes/no choices), domains ({0,1}), hard constraints (the rules), soft constraints (max downtime) and an objective (harm). It looks like a covering/knapsack-style problem with extra rules, which is known to be NP-hard in general, so exact methods get slow as the grid grows. That is a **finding we expect and will report**, not something to hide.
+**Why there is no fairness rule.** We started with one (a Gini-coefficient bound) and dropped it. Fairness is hard to define, the harm of an outage differs by place and person, and Gini is a non-local nonlinear measure that does not fit a constraint solver. What we keep is honest and limited: cuts rotate *within an episode* because of the convex cost, and we **do not claim equity over days or weeks**. Who counts more is expressed by the weights, which the operator sets.
+
+**Why the tier weights are 1 / 5 / 1000.** The Critical weight is large enough that a Critical feeder is cut only when nothing else can cover the need. The approval requirement is the actual safeguard; the weight keeps the cost ordering consistent with it. The numbers are placeholders (section 10).
+
+**Why the other two terms are tiny.** Overshoot and switching penalties are small next to harm, so they act as tie-breakers. The hard rules (minimum durations, switching budgets) do the real anti-thrashing work.
+
+### 2.4 The relaxation ladder
+
+If no plan satisfies every rule, we give up rules **in a fixed order**, each rung including the ones before it:
+
+| Rung | What is given up | Outcome |
+|---|---|---|
+| 0 | Nothing | Executable plan |
+| 1 | Maximum downtime (soft rule); the excess is reported | Executable plan |
+| 2 | Not cutting Critical feeders: offered as a **proposal** that lists exactly which (feeder, slot) cuts need approval | Not executable until approved |
+| 3 | **ESCALATE**: the shortfall cannot be covered within the rules; we report the best coverage reachable without cutting Critical feeders, and the uncovered kW per slot | The human decides |
+
+**Why this design.** A solver that silently drops rules is dangerous, and one that returns "infeasible" is useless during a heatwave. The ladder gives a usable answer while keeping each concession visible, measured and approved. Relaxation hierarchies are an established idea (constraint hierarchies, weighted CSPs); our contribution is applying them with an operator-approval step.
+
+### 2.5 How hard is it
+
+Choosing which items to cut so that their relief just covers a requirement is a **covering knapsack** problem, which is NP-hard, and ours adds rules over time. So exact methods will slow sharply as grids grow. We treat that as a **result to measure** (the scalability wall), not a flaw to hide.
 
 ---
 
-## 6. The data we use, and what the EDA told us
+## 3. Data
 
-**6.1 What data exists, and what does not.**
-Real feeder-level cut/restore histories are not public. So:
-- **Real data** is used only to make the **size and frequency of shortfalls** realistic.
-- **Everything about feeders** (tiers, loads, types, histories) is **synthetic**, with documented placeholder assumptions.
+### 3.1 What is real and what is not
 
-**6.2 The real dataset.** Hunt and Bloomfield, *Daily electricity demand data for Indian states (2014-2024)*, Zenodo, licence CC BY 4.0 (the exact DOI is to be added to `docs/data-sources.md`).
+Real feeder-level cut histories are not public. So **real data fixes only the size and frequency of shortfalls**. Everything about the feeders (tiers, loads, types, histories) is **synthetic**, built from documented placeholder assumptions.
 
-| Folder | Files | One row is | Unit | Used for |
-|---|---|---|---|---|
-| `zenodo_electricity_MW` | `peak_unmet_MW`, `corrected_peak_met_MW` (also raw `peak_met_MW`) | one day; one column per state | MW | **Shortfall size and frequency** |
-| `zenodo_electricity_MU` | `corrected_daily_energy_met_MU` (also raw) | one day; one column per state | MU (1 MU = 1 GWh) | Context only |
-| `zenodo_state` | 36 per-state weather files | one day of weather | wind, temperature, solar, heat-stress index | **Parked** (not needed; using it would push us toward forecasting) |
-| `zenodo_derived` | `weighted_daily_mean_utci_india` | one day, national heat-stress | UTCI | Parked |
+### 3.2 The real dataset and what the EDA told us
 
-**6.3 What the EDA told us (only what matters).**
+**Source.** Hunt and Bloomfield, *Daily electricity demand data for Indian states (2014-2024)*, Zenodo, CC BY 4.0 (DOI to be added to `docs/data-sources.md`). Daily, state-level, not hourly and not feeder-level.
 
-| Finding | Detail | What we do about it |
+**Used:** `peak_unmet_MW` and `corrected_peak_met_MW`. **Parked:** the weather files and heat-stress index. Using them would pull the project toward forecasting.
+
+| Finding | Detail | Consequence |
 |---|---|---|
-| Size | 3,955 rows x 39 columns per file, 1 Jan 2013 to 28 Apr 2024 | Use as is |
-| Columns | 36 states/UTs plus **Total**, **AMNSIL**, **DVC** | Exclude the three non-state columns |
-| Missing | about 6% of cells; about 240 missing days; 55 duplicate dates | Keep the first of any duplicate date |
-| Raw data has errors | The "corrected" files change about 200 cells per file; one raw peak-met value was off by about 100,000 MW | **Always use the corrected files** |
-| No corrected unmet file | Unmet demand has only the raw version | Cap suspect ratios (above 0.5) and count them (only 3 dropped) |
-| Unmet demand fell steeply | mean unmet fell by about 95% from 2013 to 2024 | Early years dominate "crisis" days |
-| Zero-heavy | 130,777 state-days have data; only 35,499 (27.1%) have unmet demand above zero | Take percentiles over **non-zero days only** |
-| A few states dominate | Jammu and Kashmir (median unmet about 20% of demand), and the north-east states (Assam, Manipur, Nagaland, Arunachal, Mizoram, Tripura) have unmet demand on most days | Be aware: pooled percentiles describe these chronic small states more than big grids |
+| Size and span | 3,955 rows x 39 columns, 1 Jan 2013 to 28 Apr 2024 | |
+| Non-state columns | **Total**, **AMNSIL**, **DVC** sit beside the 36 states and UTs | Excluded, to avoid double counting |
+| Missing data | about 6% of cells; about 240 missing days; 55 duplicate dates | Keep the first duplicate |
+| Raw errors | The "corrected" files change about 200 cells per file; one raw peak value was off by about 100,000 MW | **Always use the corrected files** |
+| No corrected unmet file | Only a raw version exists | Drop ratios above 0.5 as suspect (only 3 dropped) |
+| Zero-heavy | 130,777 state-days have data; only 35,499 (27.1%) have any unmet demand | Take percentiles over **non-zero days only** |
+| Falling trend | Mean unmet fell about 95% from 2013 to 2024 | Early years dominate the severe days |
+| Dominated by a few states | J&K (median about 20% of demand unserved) and the north-east states have unmet demand on most days | Pooled percentiles describe chronic small states more than large grids |
 
-**6.4 How we turn data into scenarios.**
-We use a **ratio**, not raw MW, so it scales to any synthetic grid of any size:
+### 3.3 From data to scenarios
+
+We use a **ratio**, not raw MW, so the same scenario scales to a grid of any size:
 
 ```
-shortfall ratio = unmet MW / (met MW + unmet MW)       on days when unmet > 0
+shortfall ratio = unmet MW / (met MW + unmet MW)      on days with unmet demand
 ```
-Percentiles of that ratio over all non-zero state-days:
 
 | Percentile | P10 | P25 | P50 | P75 | P90 | P95 | P99 | P99.9 |
 |---|---|---|---|---|---|---|---|---|
 | Ratio | 0.46% | 1.09% | 2.96% | 6.84% | 15.5% | 20.0% | 23.1% | 31.6% |
 
-**Our three scenario tiers** (percentiles 50, 75, 95): **mild = 3.0%**, **moderate = 6.8%**, **crisis = 20.0%** of demand unserved. We moved from the first plan (50/90/99) because P90 and P99 were too close together (the upper tail is dominated by J&K's normal level near 20%).
+**Our tiers use percentiles 50, 75 and 95: mild 3.0%, moderate 6.8%, crisis 20.0%** of demand unserved. The first plan (50/90/99) was dropped because P90 and P99 sit close together (the upper tail is J&K's normal level), which would have made two near-identical tiers. A 2019-onward version (`tiers_2019.json`) exists; **its comparison is not yet analysed**.
 
-A second set of tiers using only 2019 onwards (`tiers_2019.json`) has been built; **its comparison with the all-years tiers has not been analysed yet** **[TO BE FILLED]**.
+**Shape inside a day.** The data is daily, so it cannot say how a shortfall rises and falls. We use a documented synthetic **trapezoid** (ramp up over 4 slots, hold, ramp down), so `S(t) = ratio x shape(t) x demand(t)`. This is an assumption, not a data result.
 
-**6.5 The shape of a shortfall inside a day.** The data is daily, so it cannot tell us how a shortfall rises and falls within a day. We use a documented synthetic **trapezoid** (ramp up over 4 slots, hold, ramp down) multiplied by the grid's demand at each slot. This is stated as an assumption, not a data-driven result.
+### 3.4 The synthetic grid
 
-**6.6 What is synthetic, in one list.**
-- the feeders: 5% Critical, 15% Flexible, 80% Normal; types and sizes by tier (urban, rural, agricultural, industrial, mixed);
-- the hourly load shapes (evening peak for homes, flat for industry, supply blocks for farms);
-- the agricultural supply blocks (06-14, 14-22, 22-06) and a 75% promise rule;
-- the feeder histories and the shortfall's shape inside a day.
-All are **placeholders** to be calibrated from tariff orders and discom documents (`docs/field-constraints.md`).
-
-**6.7 Literature on file.** Two papers are in `Literature/`: *A Fast Load-shedding Algorithm for Power System based on Artificial Neural Network* (IEEE, 2019) and *Building and explaining data-driven energy demand models for Indian states* (2025). **Summaries and how they relate to our approach are still to be written** **[TO BE FILLED]**. The 2019 paper is an example of the machine-learning route to load shedding; see section 9.
+`make_grid(n, seed)` builds feeders: 5% Critical, 15% Flexible, 80% Normal; types and sizes by tier; hourly load shapes (evening peak for homes, flat for industry, supply blocks of 06-14, 14-22 or 22-06 for farms with a 75% promise). The same seed gives the same grid. All numbers are placeholders to be calibrated from tariff orders (`docs/field-constraints.md`).
 
 ---
 
-## 7. Resources and tools used
+## 4. System design
 
-| Resource | What for |
-|---|---|
-| **Python 3.11+** (tested on 3.12 and 3.13) | Everything |
-| **PyYAML** | Reading the policy file |
-| **NumPy** | Arrays in the solvers (not needed by the verifier) |
-| **pandas** | Reading the Zenodo CSVs (optional "data" extras) |
-| **Google OR-Tools CP-SAT (v9.15)** | **Offline answer key only** (the oracle). Never imported by the project code in `src/` |
-| **pytest** | 243 automated tests |
-| **VS Code, Git/GitHub** | Development and version control |
-| **Zenodo dataset** (CC BY 4.0) | Real shortfall statistics |
-| **CEA / Grid-India reports** (planned) | To cross-check Zenodo and look for hourly shape |
-| **Public tariff orders and discom documents** (planned) | To calibrate feeder realism (`docs/field-constraints.md`) |
+```mermaid
+flowchart TD
+    OP["OPERATOR<br/>states the shortfall, approves, forces a cut or a keep, overrides anything"]
+    LD["LEDGER<br/>what each feeder ACTUALLY did: state, time in state, switches used this shift"]
+    PL["POLICY FILE<br/>tiers, weights, limits, budgets, margin"]
+    CP["COMPILER<br/>ledger + policy + shortfall = optimization problem"]
+    LAD["RELAXATION LADDER<br/>rungs 0 to 3"]
+    SOL["SOLVERS<br/>greedy | branch-and-bound | local search"]
+    VER["INDEPENDENT VERIFIER"]
+    ACT["ACTUATION (simulated)<br/>commands can fail"]
+    OR["CP-SAT ORACLE<br/>offline answer key"]
+    OP --> CP
+    LD --> CP
+    PL --> CP
+    CP --> LAD
+    LAD --> SOL
+    SOL --> VER
+    VER --> OP
+    OP --> ACT
+    ACT --> LD
+    OR -.-> SOL
+```
 
----
+**Five rules the design never breaks, and why:**
 
-## 8. Repository map
+1. **The human is in control.** Nothing runs without the operator, and any decision can be overridden. In a safety setting, a tool that cannot be overruled will not be trusted or adopted.
+2. **The solver is untrusted; the verifier decides.** Every plan passes a small independent checker. That is what makes it safe to use fast heuristics that cannot prove anything.
+3. **No black boxes.** Each cut traces to a rule and a cost. This is why we chose constraint solving over learned models (section 5).
+4. **Policy is data.** Every tunable number lives in `configs/policy.yaml`, so changing practice means editing a file.
+5. **We claim only what we measured.** Novelty is claimed for the application and the evaluation, not for the underlying algorithms.
+
+**Repository map.**
 
 ```
-Urja_Niyam/
-├── README.md                    short intro and run commands
-├── pyproject.toml               dependencies; extras: dev, data, oracle
-├── configs/
-│   └── policy.yaml              EVERY tunable number (tiers, limits, budgets, margins, harm weights)
-├── src/loadshed/                the project code
-│   ├── model.py                 data types: Feeder, FeederHistory, Problem, Schedule
-│   ├── policy.py                loads and validates policy.yaml
-│   ├── verify.py                INDEPENDENT VERIFIER (plain loops, no solver code)
-│   ├── metrics.py               the harm objective + reporting numbers
-│   ├── sim/
-│   │   ├── grid.py              synthetic grid generator and problem builder
-│   │   ├── scenarios.py         shortfall scenarios (ratio + shape)
-│   │   └── zenodo.py            turns Zenodo files into shortfall ratios
-│   └── solvers/
-│       ├── greedy.py            plain greedy + sticky greedy baselines
-│       ├── patterns.py          every valid 16-slot on/off pattern of a feeder
-│       └── bnb.py               branch-and-bound with bounds propagation
-├── evaluation/                  OFFLINE benchmarking only
-│   ├── oracle_cpsat.py          CP-SAT answer key
-│   └── run_gap.py               benchmark: baselines and our solver vs the oracle
-├── scripts/
-│   └── build_scenario_tiers.py  Zenodo files -> mild/moderate/crisis ratios
-├── tests/                       243 tests (one file per module)
-├── notebooks/                   EDA notebook
-├── data/                        raw Zenodo files; processed EDA outputs, tiers, benchmark CSVs
-├── docs/                        this guide, field-constraints.md, data-sources.md
-├── literature/                  papers
-└── project-plan/                the original project proposal
+configs/policy.yaml          every tunable number
+src/loadshed/model.py        data types      policy.py  loads and validates the YAML
+src/loadshed/verify.py       the independent verifier
+src/loadshed/metrics.py      the harm objective and reporting numbers
+src/loadshed/sim/            grid generator, scenarios, Zenodo ratios
+src/loadshed/solvers/        greedy.py  patterns.py  bnb.py  minconflicts.py
+src/loadshed/ladder.py       the relaxation ladder
+src/loadshed/loop.py         the rolling-horizon loop
+evaluation/                  oracle_cpsat.py (CP-SAT, offline only), run_gap.py (benchmark)
+scripts/  tests/  notebooks/  data/  docs/  literature/
 ```
 
 ---
 
-# Part C: The approach
+## 5. Approach: why constraint-based search, and why several solvers
 
-## 9. Why exact algorithms instead of the common ones
+### 5.1 Why not the common alternatives
 
-**9.1 What "the common ones" are.**
-
-| Common approach | What it is |
-|---|---|
-| **Manual rotation** | An operator picks feeders by experience or a fixed rotational timetable. |
-| **Simple greedy rules** | "Cut the biggest non-critical loads until the gap is closed." Fast and simple. |
-| **Machine learning** | Train a model (for example a neural network) to decide or to speed up decisions, as in the 2019 paper in our `Literature` folder. |
-| **Commercial optimizers** | Proprietary systems whose internal logic we cannot inspect. |
-
-**9.2 What we chose.** We treat the decision as a **constraint optimization problem** and solve it with **search with proofs**: a **branch-and-bound** search with **bounds propagation** and a **Lagrangian lower bound**, plus **local search** (planned), plus a **verifier**. A mature solver (CP-SAT) is used **only as an answer key** to check ours.
-
-**9.3 Why. The reasons, in order of importance.**
-
-1. **Hard rules must be guaranteed, not "usually followed".** "Never cut a hospital without approval" and "never exceed the switching budget" are not preferences. A learned model gives probabilities; a constraint solver plus a verifier gives a yes/no we can audit.
-2. **There is no training data.** Machine learning needs examples of correct decisions. Nobody has published labelled "optimal shedding schedules" for Indian feeders. We would have to generate them with the very solver we are building.
-3. **Transparency.** A cut can be traced to a rule and a cost: "feeder 7 was cut because it had the lowest harm per kW and was last cut 6 hours ago". A neural network cannot say that.
-4. **We can say how good the answer is.** An exact method gives either the proven optimum or a proven **lower bound**, so we can state "within X% of optimal". Heuristics and learned models cannot.
-5. **New rules are edits, not retraining.** Change a number in `policy.yaml` and the system adapts.
-6. **Human control fits naturally.** Operator overrides are just "fix this variable" in a constraint model.
-
-**9.4 How the families differ.**
-
-| | Manual / simple greedy | Machine learning | **Our approach** |
-|---|---|---|---|
-| Guarantees hard rules | Only if the human is careful | No (statistical) | **Yes (verified)** |
-| Needs training data | No | **Yes, and none exists** | No |
-| Can explain a decision | Only the human can | Hard | **Yes (constraints and costs)** |
-| Knows how far from the best | No | No | **Yes (optimality gap, lower bounds)** |
-| Speed | Instant | Fast once trained | Slower; slows more as the grid grows |
-| Adapts to a new rule | Re-train people | Re-train model | **Edit the policy** |
-| Handles replanning with history | By hand | Must be built in | **Built into the model** |
-
-**9.5 What the exact approach actually bought us (measured, synthetic grid).**
-On 10-feeder instances where we can compute the true optimum (section 12):
-- The plain greedy baseline spends **130-165% more harm** than the optimum (median).
-- The better baseline (sticky greedy, which mimics manual rotation) still spends about **34-41% more** (median).
-- Our branch-and-bound and the CP-SAT answer key agree on the optimum on every instance both finished.
-
-So "just use a simple rule" leaves roughly a third of the harm on the table in our test grids. **Caveat:** the grid is synthetic, so this shows the *potential*, not a real-world saving.
-
-**9.6 The price we pay, honestly.** Exact search slows down as grids grow. At 50 feeders, neither CP-SAT nor our solver proved optimality in 20-60 seconds on our machine, and our solver found worse solutions than CP-SAT. That is why **local search** is the next solver: it gives up proof in exchange for speed, and our lower bound lets us still measure how close it gets.
-
----
-
-## 10. How each algorithm works under the hood
-
-### 10.1 The model as a constraint problem
-- **Variables:** one yes/no per (feeder, slot).
-- **Domain:** {0 = on, 1 = cut}.
-- **Hard constraints:** the six rules in section 5.4.
-- **Soft constraint:** maximum downtime.
-- **Objective:** minimize harm.
-
-A **search** explores combinations of values; **propagation** removes values that cannot be part of any solution; a **bound** says "no completion of this partial plan can beat the best plan we already have", letting us skip whole regions.
-
-### 10.2 The independent verifier (`verify.py`)
-The verifier is deliberately small and does not import any solver. For a candidate plan it:
-1. checks the shape (every feeder present, 16 values of 0 or 1);
-2. **walks each feeder through time**, starting from its history, counting how long it has been in each state. At each state change it checks the minimum cut/restore duration and counts switches (resetting the counter at shift boundaries), and notes restores to compute the surge;
-3. checks the **system-wide switching budget** by counting every feeder's switches in order;
-4. checks **relief** slot by slot: relief must be at least shortfall x 1.05 plus surge;
-5. checks overrides, critical approval, and promised supply windows;
-6. reports **maximum downtime** only as a soft violation, and only if the *plan itself* extended the outage (a feeder already over the limit in its history and restored immediately is not blamed on the plan).
-
-It returns three lists: **hard** violations (plan rejected), **soft** violations (with a size), and **waived** violations (a rule broken at a slot the operator forced; the operator's order wins and it is logged). **Relief is never waived.** Because every solver's output goes through this one small checker, even a fast, unproven heuristic cannot hand the operator an illegal plan.
-
-### 10.3 The greedy baselines (`solvers/greedy.py`)
-**Plain greedy** goes slot by slot:
-1. **Lock** feeders the rules decide: forced cuts/keeps, critical feeders without approval, feeders still inside their minimum cut or restore time.
-2. For the rest, compute the **harm of cutting this feeder this slot** (including its current run length) and rank candidates by **harm per kW that actually counts toward the remaining need** (a feeder bigger than the remaining need is credited only for the remainder; without this the greedy wastes huge feeders on small shortfalls, a flaw we found and fixed).
-3. Add candidates until the slot's need (shortfall x margin + surge) is covered.
-4. Respect switching budgets, keep a switch in reserve for farm feeders that will need a restore to honour their promised hours, and if there is no budget to restore a feeder, leave it cut.
-
-**Sticky greedy** is the same but treats an already-cut feeder as free to keep, so it holds the same feeders until the downtime limit and then rotates, which is plain manual rotational practice. The two baselines fail in different situations, so we report both and the better of the two. Greedy is **myopic**: it never looks ahead, so it can burn the switching budget early and get stuck.
-
-### 10.4 Patterns (`solvers/patterns.py`)
-Only two things couple feeders together: the per-slot relief sums and the system switching budget. Every other rule involves one feeder alone. So, for each feeder, we **list every valid 16-slot on/off row** (depth-first search over slots, tracking state, run length and switches; pruning rows that break a rule), and the search then **chooses one row per feeder**. Each pattern carries:
-- its **cost** (harm + switch cost + overshoot cost),
-- its **net relief** per slot (relief minus the restoration surge),
-- its **switch events** per slot (for the system budget).
-
-The total objective is just the **sum of the chosen patterns' costs** plus a constant, which makes the problem *separable* and the bounds easy. We also drop **dominated** patterns (one that is no cheaper and no better in every slot than another pattern). A test checks that, for every possible row of random feeders, the enumeration includes **exactly** the rows the verifier accepts.
-
-### 10.5 Branch-and-bound with bounds propagation (`solvers/bnb.py`)
-Think of a tree. Each level decides the pattern of one feeder. A **node** is a partial plan.
-
-**Step 1: Propagate (bounds propagation).** For each slot, the feeders together must supply at least `need`. Each feeder can supply at most the best relief among its remaining patterns. *Example:* slot needs 1,000 kW; feeder A can give at most 600, B at most 300, C at most 200 (total 1,100). If C gives nothing, A+B reach only 900 < 1,000. So any C pattern that gives less than 100 kW in that slot is impossible, and is **deleted** from C's options. Deleting options can make other deletions possible, so we repeat until nothing changes. If any feeder runs out of options or a slot can no longer be covered, the node is dead. The switching budget is checked the same way, using only the switches that are unavoidable.
-
-**Step 2: Bound (Lagrangian lower bound).** We want a number that no completion of this node can beat. Trick: **put a price** (per kW of relief, per slot) on the relief rule and let each feeder decide **alone** whether cutting is worth it at that price, ignoring the coupling. At any non-negative price this gives a valid lower bound (relaxing a rule can only make things cheaper). At a node the bound is:
-
-```
-price x need  +  constant  +  sum over feeders of ( cheapest remaining pattern, where relief is paid for at the price )
-```
-We tune the prices **once at the root** with the subgradient method: raise the price of a slot whose relief falls short, lower it when relief overshoots, shrinking the step over time. Two lessons made this bound strong enough to use:
-- *First version too weak:* the bound could "cut" a huge feeder **fractionally** to cover a small shortfall. Fix: for the bound only, a pattern is credited with **at most `need` per slot** (relief beyond the need cannot help cover it).
-- *Second version invalid:* with negative relief (restoration surge) the cap argument broke and the bound exceeded the true optimum. Fix: clip relief to `[0, need]`. A test now checks the bound never exceeds the optimum.
-
-**Step 3: Prune.** If the node's bound is not better than the best plan found so far (the **incumbent**), discard the whole subtree.
-
-**Step 4: Branch.** Pick the feeder where the best and second-best choices differ most (largest **regret**), and try its patterns **cheapest first** (by reduced cost). Starting incumbent: the better of the two greedy baselines. A quick "dive" at each node also tries everyone's cheapest pattern in case that happens to be valid.
-
-**Relaxation ladder, rung 1.** If the strict problem is proven infeasible, the solver reruns with the maximum-downtime rule relaxed and reports `mode = relaxed_downtime`.
-
-**What it returns:** a verified plan, a status (OPTIMAL = proven, FEASIBLE = stopped by a limit, INFEASIBLE = proven impossible), an objective and a **proven lower bound**.
-
-**Where it struggles:** the tree grows very fast with feeders. At 10 feeders we prove optimality in about one second for most instances; at 50 feeders the search does not finish within a minute, which is the **scalability wall** we plan to measure.
-
-### 10.6 Weighted min-conflicts local search **[PLANNED]**
-Idea (to be built next): start from a complete plan (for example from the greedy), and repeatedly pick a **violated or costly spot** and change one choice to the value that reduces a weighted score (violations plus harm). When the search gets stuck, **increase the weights of constraints that stay violated** so it escapes. It is fast and scales, but it **cannot prove** a plan is optimal or that none exists. So we pair it with (a) a cheap exact feasibility check first and (b) the verifier on every result. Our lower bound from section 10.5 lets us measure its gap even when no solver can prove optimality. **[TO BE FILLED: implementation and results, section 19.]**
-
-### 10.7 The CP-SAT oracle (`evaluation/oracle_cpsat.py`)
-CP-SAT is Google's industrial solver that combines constraint programming with **SAT-style clause learning** (it learns from every dead end), linear-programming bounds, and many parallel search strategies. We use it as an **answer key**, never in the decision path:
-- it encodes **exactly** the verifier's rules and the same harm objective (yes/no variables, run-length integer variables, "element" tables for the surge, conditional constraints for budgets and durations);
-- numbers are scaled to integers, with loads rounded down and requirements rounded up, so every oracle answer is also accepted by the verifier;
-- if the strict problem is infeasible it retries with maximum downtime relaxed.
-
-Why bother? Without a known optimum, "solution quality" means nothing. The oracle lets us say "our baseline spends 35% more harm than the proven optimum".
-
-### 10.8 Relaxation ladder and ESCALATE **[PLANNED: partly built]**
-Rung 1 exists inside the exact solver and the oracle. The full ladder (rung 2: Critical cuts with approval; rung 3: ESCALATE with the remaining shortfall reported; relaxation measured as a **magnitude**, not on/off) will be built as its own module. **[TO BE FILLED: section 20.]**
-
-### 10.9 Rolling-horizon replanning loop **[PLANNED]**
-Plan 16 slots, commit the first, advance one slot, update the history (who has been off how long, switches used), accept new shortfall values and operator overrides, and plan again. Measures to add: **thrashing rate** (feeders flipped between replans for no real reason), **cost of operator override**, and **robustness to load-estimate error**. **[TO BE FILLED: section 21.]**
-
----
-
-## 11. How we know the code is correct
-
-For a safety-related tool, "it ran" is not enough. We use four checks.
-
-1. **Hand-computed tests.** For example, the harm of a small known plan is worked out on paper and the test demands the exact number.
-2. **The verifier as referee.** Pattern enumeration is checked against the verifier on **every possible row** of random single-feeder problems (50 random cases, both strict and relaxed modes).
-3. **Brute force.** On tiny problems we enumerate **every possible schedule**, keep the ones the verifier accepts, and take the cheapest. The oracle and the branch-and-bound must match that number exactly. They matched on all 50+ random problems, including strict, relaxed and infeasible outcomes, and including operator overrides.
-4. **Mutation testing.** We deliberately break the code in several places (ignore a rule, drop the surge, inflate the bound) and confirm the tests **fail**. A test that cannot fail proves nothing.
-
-**Bugs found by these checks (a record of what the tests are worth):**
-
-| # | Bug | Found by |
+| Alternative | What it is | Why we did not choose it |
 |---|---|---|
-| 1 | The data loader kept empty cells in one pandas version, turning every percentile into NaN | a unit test on fake data |
-| 2 | Greedy let farm feeders break their promised hours when the switching budget ran out | benchmark against the verifier |
-| 3 | The greedy cut huge feeders for small shortfalls (a strawman baseline) | inspecting the worst gap by hand |
-| 4 | The verifier blamed the plan for an outage already over the limit in history | random brute-force comparison with the oracle |
-| 5 | The first oracle treated the system switching budget conservatively | same random comparison |
-| 6 | The first Lagrangian bound was too weak (about 180 vs an optimum of 3,394) | comparing the bound to known optima |
-| 7 | The "fixed" bound was **invalid** (above the optimum) when relief was negative | comparing the bound to known optima |
+| **Manual rotation** | Operator experience or a fixed timetable | No way to compare options or know how good a plan is; slow when the shortfall changes |
+| **Simple greedy rules** | "Cut the biggest non-critical loads first" | Fast, but ignores outage length, switching limits and the future. We implemented it as a baseline and measured the loss (section 8) |
+| **Machine learning** | Train a model (for example a neural network, as in the 2019 load-shedding paper in `Literature/`) to decide or to speed up decisions | Needs labelled optimal decisions, and none exist for Indian feeders; gives no guarantee that hard rules hold; cannot explain a cut. We would have to generate labels using the very solver we are building |
+| **Commercial optimizers** | Proprietary distribution-management systems | Their logic is not available to us, so we cannot inspect or compare it |
 
-Current status: **243 tests pass.**
+What constraint solving gives that the others do not: **guaranteed rules** (checked by the verifier), **a measurable distance from the best possible** (lower bounds and optimality gaps), **explanations** (binding constraints and costs), and **adaptation by editing a policy file** instead of retraining.
+
+### 5.2 Why a ladder of solvers instead of one
+
+Each solver answers a different question, and the comparison between them is the evaluation.
+
+| Solver | Question it answers |
+|---|---|
+| **Greedy baselines** | What does a sensible simple rule achieve? (the bar to beat) |
+| **Branch-and-bound** (ours) | What is the proven optimum, or a proven lower bound, and where does exact search stop being practical? |
+| **Local search** (ours) | What can we get at sizes where exact search fails? |
+| **CP-SAT** | What is the best known answer, from an industrial solver? Used **only** to grade the others |
+
+We wrote the first three from scratch so every step can be explained. CP-SAT is kept out of the decision path on purpose: it is an answer key, not part of the product.
 
 ---
 
-# Part D: Where we are
+## 6. How the algorithms work
 
-## 12. Results so far [LIVE]
+### 6.1 The verifier
 
-**How to read the numbers.** *Gap* = how much **more harm** a plan has than the best known plan, in percent. A gap of 100% means twice the harm. Results use our **synthetic grid**, our three tiers (3%, 7%, 20%), starting times 10:00 and 17:00, and the placeholder policy. System switching budget = max(20, 0.6 x feeders). All figures are **medians** over instances unless stated.
+A deliberately small file that imports no solver. For a plan it:
 
-**12.1 Ten feeders (the optimum is known).** 6 instances per tier.
+1. checks the shape (every feeder present, 16 values of 0 or 1);
+2. **walks each feeder through time starting from its history**, tracking how long it has been in each state. At every state change it checks the minimum cut or restore duration and counts one switch (counters reset at shift boundaries);
+3. counts switches system-wide against the budget;
+4. checks relief slot by slot: cut load must be at least `shortfall x margin + surge`;
+5. checks overrides, Critical approval and promised hours;
+6. reports maximum downtime as a **soft** violation, only if the *plan itself* extended the outage.
 
-| Tier | Oracle proved optimal | Our B&B proved optimal | Plain greedy gap | Sticky greedy gap | Best of the two |
-|---|---|---|---|---|---|
-| Mild (3%) | 6/6 | 6/6 | 130% | 34% | **34%** |
-| Moderate (7%) | 6/6 | 6/6 | 136% | 35% | **35%** |
-| Crisis (20%) | 6/6 | 4/6 | 165% | 107% | **41%** |
+It returns **hard** violations (plan rejected), **soft** ones with a size, and **waived** ones (a rule broken at a slot the operator forced; the operator wins, and it is logged). Relief is never waived: physics does not take orders.
 
-Our branch-and-bound returned **the same optimum as the oracle** on every instance it finished (median difference 0.0%); on the two unfinished crisis cases the largest difference was 11.3% worse. The oracle takes about 1.3-2.9 s per instance.
+### 6.2 Greedy baselines
 
-**12.2 Fifty feeders (nobody can prove the optimum).** 4 instances per tier; oracle limit 20 s; our B&B limit 60 s; both on one machine.
+A **greedy** method builds a solution one step at a time, taking the locally best choice and never undoing it. It is a **heuristic**: fast, but with no guarantee.
 
-| Tier | Proven optimal (either solver) | Plain greedy gap | Sticky greedy gap | Best of the two | Our B&B vs CP-SAT (harm, median) | True gap of the best baseline lies between |
+**Plain greedy**, slot by slot:
+1. **Lock** feeders that the rules decide: forced cuts and keeps, Critical feeders without approval, feeders still inside a minimum duration.
+2. For the rest, compute the **harm of cutting this feeder this slot**, including its current outage length.
+3. Rank by **harm per kW that actually counts toward the remaining need**, and add feeders until the slot is covered.
+4. Respect switching budgets, keep one switch in reserve for farm feeders that will need a restore to honour their promise, and leave a feeder cut if there is no budget to restore it.
+
+Step 3 is the **cost-effectiveness heuristic** known from covering problems. Our first version ranked by harm per *total* kW and cut a 3.5 MW feeder to cover 300 kW, because per kW it looked cheap. Crediting a feeder only for the need still remaining fixed that.
+
+**Sticky greedy** keeps an already-cut feeder cut (it is "free") until it hits the downtime limit, then rotates. This is plain manual rotation. We keep **both**, because they fail differently: plain greedy rotates early and can burn the switching budget; sticky holds feeders until the budget leaves some stuck. We report the better of the two.
+
+Greedy is **myopic**: it never looks ahead, so it cannot plan switches across the horizon. That is exactly the weakness the other solvers exploit.
+
+### 6.3 Reformulating as patterns
+
+Only two things connect feeders: the per-slot relief sums and the system switching budget. Every other rule involves one feeder alone. So we list, once per feeder, **every valid 16-slot on/off row** (a *pattern*) by depth-first search over the slots, carrying the state, the run length and the switch count and discarding rows that break a rule. A search then **chooses one pattern per feeder**.
+
+Each pattern carries its cost, its **net relief** per slot (relief minus restoration surge) and its switch events. The total objective becomes **the sum of the chosen patterns' costs plus a constant**: the problem is *separable*, which makes bounds easy. We also discard **dominated** patterns (no cheaper and no better in any slot than another).
+
+**Why.** The search space is no longer 2^800 raw bits but a choice among a few hundred valid rows per feeder, with every single-feeder rule already satisfied. A test checks that, on random problems, the enumeration contains **exactly** the rows the verifier accepts. Cost: setup is about 15 seconds at 500 feeders.
+
+### 6.4 Branch-and-bound with bounds propagation
+
+**Search tree.** Each level decides one feeder's pattern. A node is a partial plan. Four steps per node:
+
+**1. Propagate (constraint propagation).** For each slot the feeders together must supply at least `need`. Each feeder can supply at most the best relief among its remaining patterns. *Example:* a slot needs 1,000 kW. Feeder A can give at most 600, B at most 300, C at most 200 (total 1,100). If C gave nothing, A and B reach only 900, so any C pattern that supplies less than 100 kW in that slot is impossible and is **deleted** from C's domain. Deleting values lets other deletions follow, so we repeat until nothing changes (a *fixpoint*). A feeder left with no patterns, or a slot that cannot be covered, kills the node. The system switching budget is checked the same way, using only switches that are unavoidable. This is **bounds propagation on a global sum constraint**.
+
+**2. Bound (an admissible heuristic).** We want a number that no completion of this node can beat, so that hopeless nodes can be skipped. In A* terms this plays the role of an **admissible heuristic**: it never overestimates the best completion, so pruning on it never discards the optimum. We get it with **Lagrangian relaxation**: *put a price on the relief rule* (per kW, per slot) and let each feeder decide alone whether cutting is worth that price. At any non-negative price the result is a valid lower bound. At a node:
+
+```
+bound = price x need + constant + sum over feeders of (cheapest remaining pattern, with relief paid for at the price)
+```
+The prices are tuned once at the root by the **subgradient method**: raise the price of a slot that is under-covered, lower it where relief overshoots, with shrinking steps.
+
+Two bugs taught us what makes this bound work. The first version was weak (about 180 against a true optimum of 3,394) because it could cut a huge feeder *fractionally* to cover a small need. The fix credits each pattern with **at most `need` per slot**, since relief beyond the need cannot help cover it. The second version was **invalid** (above the optimum) because surges give negative relief and the capping argument fails for negatives. Clipping relief to `[0, need]` fixed it. A test now checks the bound never exceeds the known optimum.
+
+**3. Prune.** If the node's bound cannot beat the best complete plan found so far (the **incumbent**), discard the whole subtree.
+
+**4. Branch.** Choose the feeder whose best and second-best choices differ most (**largest regret**), the analogue of "fail-first" variable ordering: decide where a wrong choice costs the most. Try its patterns **cheapest first**, the analogue of best-first value ordering. The incumbent starts as the better greedy plan, and at each node we also try everyone's cheapest pattern in case it happens to be valid.
+
+If the strict problem is proven infeasible, the solver reruns with maximum downtime relaxed (rung 1). Every plan it returns has passed the verifier.
+
+**Where it struggles.** The tree grows very fast. At 10 feeders it proves optimality in about a second for most instances. At 50 feeders it does not finish in a minute. On one 50-feeder instance our **proven lower bound (1,715) was higher than CP-SAT's (1,261)**, though CP-SAT found the better solution.
+
+### 6.5 Local search: weighted min-conflicts
+
+**Local search** starts from a *complete* assignment and improves it by small changes. It gives up proof in exchange for speed. **Min-conflicts** is the classic CSP version: pick a variable involved in a violated constraint and give it the value that leaves the fewest violations.
+
+**Our version.**
+- **State:** one pattern per feeder. Patterns already satisfy every single-feeder rule, so the only things that can be violated are the **16 relief sums** and the **system switching budget**.
+- **Score:** `harm + sum over slots (weight x relief shortfall) + (weight x budget excess)`.
+- **Move:** pick feeders that can help the violated slot (the conflicted variables); give each the pattern with the best score; take the best move found among a small sample.
+- **Breakout weights.** At a local minimum with something violated, multiply the weight of the violated constraints by 1.5. A stuck search makes its own obstacles progressively costlier until it moves. Our first version used small additive increments and failed on a case with a cost of 26,000, which would have needed about 80,000 iterations. Geometric growth reaches any scale in a few dozen steps.
+- **Strategic oscillation.** While nothing is violated, all weights decay. That lets the search trade a little violation for lower cost, then repair it. Without this it cannot descend below its current cost while staying feasible.
+- **Tabu list.** A move back to a pattern left in the last 5-15 iterations is blocked, so it does not cycle.
+- **Start and restarts.** It starts from the better greedy plan, so it is **never worse than the baselines**. When stuck, it restarts from the best plan with 10% of the feeders shaken.
+
+It cannot prove optimality or infeasibility (apart from a cheap necessary check). Its results are graded against bounds and the oracle, and every plan is verified.
+
+### 6.6 CP-SAT, the answer key
+
+CP-SAT is Google's industrial solver. It combines **constraint programming**, a **SAT solver** and **linear programming**. The mechanism, roughly:
+
+- **Lazy clause generation.** Integer variables are represented by yes/no literals created on demand, so the whole model can be handled by a SAT engine while constraints still propagate as in constraint programming.
+- **Conflict-driven clause learning (CDCL).** When a search path hits a contradiction, the solver analyses *why*, learns a new clause that forbids that whole reason, and **backjumps** past the useless levels. It never repeats a mistake. This is the main source of its strength on tightly constrained problems.
+- **LP relaxation and cuts.** In parallel it solves a linear relaxation, which supplies strong lower bounds, and adds cutting planes.
+- **Presolve** simplifies the model first.
+- **A portfolio of parallel workers** runs different strategies (including large-neighbourhood search, which repeatedly re-solves part of the problem) and shares solutions and bounds.
+- **Optimization.** After finding a plan it adds "objective must be better than this" and continues, until the search space is exhausted or the bound meets the best plan, which is a proof.
+
+**How we use it.** Our oracle encodes exactly the verifier's rules and the same harm objective: a yes/no variable per (feeder, slot); an integer run-length variable per (feeder, slot), with conditional equalities; start and restore indicators; a table (`element`) constraint for the surge; and conditional constraints for durations and budgets. Numbers are scaled to integers, with loads rounded down and requirements rounded up, so **every oracle answer also passes the verifier**.
+
+**Why only an oracle.** Without a known optimum "solution quality" means nothing; with it we can say "within X% of optimal". Keeping it offline means the product stays explainable, and the project stays our algorithms, graded against a trusted one. We also test the oracle itself: on random tiny problems it must equal a **brute-force** enumeration of every schedule (section 7).
+
+### 6.7 The ladder in practice
+
+The ladder tries rung 0, then 1, then 2, then 3, each with the same solver chain: exact branch-and-bound up to 12 feeders, otherwise local search. Each failure is labelled **proven impossible** (an exact search or the necessary check proved it) or **not found in time** (a heuristic gave up), so the operator knows how far to trust "no plan".
+
+- **Rung 1** reports the excess per feeder ("f03 off 14 slots, limit 12, +2").
+- **Rung 2** reruns with every Critical (feeder, slot) allowed, then lists the ones actually used. The result is deliberately **not executable**: the verifier rejects it for a missing approval until the operator approves. Approval is a function call that adds those pairs to the problem.
+- **Rung 3** finds the largest fraction of the shortfall the allowed actions can cover, by **bisection** over a scaling factor, and reports the uncovered kW per slot. Covering the same fraction in every slot is simple to explain but not the best possible, which is an open point (section 9.3).
+
+### 6.8 The rolling-horizon loop
+
+This is the standard idea of **receding-horizon (model-predictive) control**: plan ahead, act on the first step, observe, replan. A single plan is never right for long, because shortfalls change, loads are estimates, and breakers fail. Each cycle:
+
+1. **Build the problem** from the *ledger* (what feeders actually did), the shortfall the operator currently states, estimated loads, overrides and earlier approvals.
+2. **Solve it through the ladder**, warm-started with last cycle's plan shifted forward.
+3. If the ladder proposes Critical cuts, **ask the operator** (a callback; the simulation can approve, decline or do something smarter).
+4. **Commit only the first slot** and send commands. Each may fail. Real loads differ from estimates by a per-feeder bias plus noise.
+5. **Update the ledger from what happened**, not what was planned. A failed command still costs one switching operation. Counters reset when a new shift starts.
+
+The loop records what was actually suffered (harm, uncovered kW, switches), and two stability measures: the **plan-revision rate on quiet cycles** (how much the new plan changes the overlap with the old one when nothing changed in the world) and **short cycles** (on-off-on or off-on-off with the middle state at most one hour). These measure *plan thrashing*, a known problem in receding-horizon control.
+
+---
+
+## 7. How we know the code is correct
+
+For a safety tool, "it ran" is not evidence. Five checks, each guarding against a different kind of mistake:
+
+1. **Hand-computed tests.** The harm of a small plan is worked out on paper and the test demands that exact value.
+2. **The verifier as referee.** Pattern enumeration must equal *exactly* the rows the verifier accepts, over every possible row of random single feeders, in both strict and relaxed modes.
+3. **Brute force.** On tiny problems we enumerate every possible schedule, keep those the verifier accepts, and take the cheapest. The oracle and the branch-and-bound must match it exactly, including infeasible cases, relaxed cases and operator overrides. They matched on every random problem tried.
+4. **Whole-episode verification.** What the loop *actually executed* across all its replans must pass the verifier as **one plan over the whole episode**. That proves minimum durations, switching budgets and shift resets held *between* cycles, not just inside each plan.
+5. **Mutation testing.** We deliberately break the code (ignore a rule, drop the surge, inflate the bound, record a failed command as successful, skip the shift reset) and confirm that tests **fail**. A test that cannot fail proves nothing. This exposed two weak tests, which we rewrote.
+
+**Bugs these checks found:**
+
+| Bug | Found by |
+|---|---|
+| Loader kept empty cells in one pandas version, turning every percentile into NaN | A unit test on fake data |
+| Greedy let farm feeders break promised hours when the switching budget ran out | Benchmarking against the verifier |
+| Greedy cut huge feeders for small shortfalls (a strawman baseline) | Inspecting the worst gap by hand |
+| Verifier blamed the plan for an outage already over the limit in its history | Random brute-force comparison |
+| First Lagrangian bound far too weak; its fix was **invalid** (above the optimum) | Comparing bounds to known optima |
+| Local search could not find a plan when its penalty weights started tiny | Random comparison against the oracle |
+
+---
+
+## 8. Results so far [LIVE]
+
+**How to read the numbers.** *Gap* is how much **more harm** a plan has than the best known plan (100% means twice the harm). Everything uses our **synthetic grid**, the three tiers (3%, 7%, 20%), start times 10:00 and 17:00, and the placeholder policy. The system switching budget is `max(20, 0.6 x feeders)`. All figures are **medians** unless stated, on one machine with short time limits.
+
+### 8.1 Ten feeders (the true optimum is known)
+
+6 instances per tier.
+
+| Tier | Oracle proved optimal | Branch-and-bound proved optimal | Plain greedy gap | Sticky greedy gap | Best of the two | Local search vs best found |
 |---|---|---|---|---|---|---|
-| Mild | 0/4 | 422% | 92% | 92% | 34% worse | **92% and 127%** |
-| Moderate | 0/4 | 336% | 98% | 98% | 88% worse | **98% and 175%** |
-| Crisis | 0/4 | 93% | 1,386% | 93% | 5% worse | **93% and 138%** |
+| Mild | 6/6 | 6/6 | 130% | 34% | **34%** | 0.0% |
+| Moderate | 6/6 | 6/6 | 136% | 35% | **35%** | 0.0% |
+| Crisis | 6/6 | 4/6 | 165% | 107% | **41%** | 0.0% (max 0.2%) |
 
-The last column uses both the best solution anyone found (gap at least this large) and the best proven lower bound (gap at most this large), so the true gap is inside the interval.
+Branch-and-bound returned the oracle's optimum wherever it finished. Local search improved on the best greedy plan by 25-29% and matched the best known solution.
 
-**12.3 What these results mean.**
-1. **Simple rules waste a lot.** Even the better baseline leaves 34-41% extra harm at 10 feeders and about 90-175% at 50 feeders (synthetic data).
-2. **Our exact solver is correct.** It agrees with the independent oracle wherever both finish.
-3. **At 50 feeders, exact search hits a wall** (neither solver proves optimality in 20-60 s on one machine), and our solver's solutions are worse than CP-SAT's. This motivates local search.
-4. **Sticky greedy breaks down in a crisis** (a gap near 1,400% at 50 feeders): holding feeders cut exhausts the switching budget and leaves feeders stuck cut. The plain greedy is the better baseline there, which is why we report the best of the two.
-5. **Our lower bound is competitive.** On one 50-feeder instance we measured earlier, our proven lower bound (1,715) was higher than CP-SAT's (1,261) even though CP-SAT found the better solution (2,401 vs 3,636). We plan to repeat this systematically.
+### 8.2 Fifty feeders (nobody can prove optimality)
 
-**Caveats:** one machine, short time limits, synthetic grid, placeholder parameters, and only two start times. These numbers show the method works and where it strains. They are **not** predictions for a real grid.
+4 instances per tier. Oracle 20 s, branch-and-bound 60 s, local search 7 s.
+
+| Tier | Proved optimal | Best baseline gap, between | Branch-and-bound worse than CP-SAT | **Local search worse than best found** | Local search better than best baseline |
+|---|---|---|---|---|---|
+| Mild | 0/4 | 89% and 132% | 33% | **6.2%** | 44% |
+| Moderate | 0/4 | 97% and 178% | 87% | **4.6%** | 46% |
+| Crisis | 0/4 | 100% and 138% | 4.4% | **2.8%** | 45% |
+
+The "between" interval uses the best solution anyone found (the gap is at least this) and the best proven lower bound (the gap is at most this), so the true gap lies inside it. One larger test: at 200 feeders, local search cut the harm of the best greedy plan from 6,706 to 3,763 (mild) and from 56,498 to 50,867 (crisis) in 40 seconds (single instance each).
+
+### 8.3 The rolling-horizon loop
+
+Measured on 6-feeder episodes. These show behaviour; they are not yet a systematic study.
+
+- **Executed history passes the verifier as a single plan**, including with breaker failures, operator overrides, a mid-episode shortfall change and short shifts that force rotation.
+- **A failed command is seen and compensated.** The shortfall is unserved in that slot, and the next plan covers it. The failed attempt costs a switching operation.
+- **Critical feeders are cut only after approval.** Declining leads to ESCALATE with the shortfall unserved.
+- **Safety margin trade-off.** With 20% load-estimate error, a 5% margin left 273 kW-slots unserved while a 40% margin left none, at **2.5 times the harm** (16,880 versus 42,271) on one scenario. The margin is insurance with a measurable price.
+- **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way. Its value for local search at 50+ feeders is untested.
+
+### 8.4 What this means
+
+1. **A simple rule leaves a lot on the table.** The better baseline spends 34-41% more harm than the optimum at 10 feeders and roughly 90-175% more at 50 (synthetic data; this shows potential, not a real saving).
+2. **Our exact solver is correct**, and agrees with the independent oracle wherever both finish.
+3. **Exact search hits a wall by 50 feeders** in our setup. Local search, written to continue where it stops, is within about 3-6% of the best solution found by any solver, in 7 seconds.
+4. **Sticky greedy breaks in a crisis at 50 feeders** (gap near 1,300%) by exhausting the switching budget, so the plain greedy is the better baseline there. This is why we report both.
+5. **Honest caveat:** one machine, short limits, a synthetic grid and placeholder parameters. These results show the methods work and where they strain, not what a real grid would do.
 
 ---
 
-## 13. Progress tracker [LIVE]
+## 9. Progress tracker and plan [LIVE]
 
-| # | Phase | Status | Notes |
+### 9.1 What is done, and why in this order
+
+| # | Step | Status | Why it came here |
 |---|---|---|---|
-| 1 | Problem formalization, literature, data selection | **Mostly done** | Proposal rewritten after review; Zenodo selected and analysed. Citation list and `docs/field-constraints.md` still to be completed |
-| 2 | Model, verifier, metrics | **Done** | Full rule set checked from history; 28 verifier tests plus metrics tests |
-| 3 | Grid simulation and data pipeline | **Done** | Generator, tier script; parameters are placeholders |
-| 4 | Thin slice: greedy baselines + CP-SAT oracle | **Done** | First optimality gaps measured |
-| 5 | Branch-and-bound with bounds propagation | **Done (first version)** | Exact at 10 feeders; hits a wall at 50 |
-| 6 | Weighted min-conflicts and full solver comparison | **Next** | |
-| 7 | Relaxation ladder and ESCALATE | Planned | Rung 1 exists in the exact solver and oracle |
-| 8 | Rolling-horizon loop, operator control, actuation failure | Planned | |
-| 9 | Evaluation harness (scale to 500, thrashing, load error, override cost) | Partial | Gap benchmark done; rest pending |
-| 10 | Optional plain-language explainer | Planned (optional) | LLM, if used, is read-only |
-| 11 | Report, polish, demo, viva preparation | Planned | |
+| 1 | Problem framing, proposal review, scope decisions | Done | Fixed the spine first: model, rules and claims. Later work depends on it |
+| 2 | Data selection and EDA; scenario tiers | Done | Gave realistic shortfall sizes before building anything that uses them |
+| 3 | Model, policy file, **verifier**, metrics | Done | The referee had to exist before any solver, so every solver could be checked against the same rules |
+| 4 | Synthetic grid and scenario generator | Done | Needed inputs for every later experiment |
+| 5 | Greedy baselines and **CP-SAT oracle** | Done | The first end-to-end slice: a baseline, an answer key and a measured gap. It exposed that the first baseline was a strawman |
+| 6 | **Branch-and-bound** with bounds propagation | Done | The core exact method; its bound is also the yardstick at sizes where nothing can prove optimality |
+| 7 | **Weighted min-conflicts** local search | Done | Exact search stops at about 50 feeders; this continues beyond |
+| 8 | **Relaxation ladder** with operator approval and ESCALATE | Done | Needed before the loop, so every cycle always returns a usable, honest answer |
+| 9 | **Rolling-horizon loop** | Done | Turns the solvers into a working system and makes history-based rules real |
+| 10 | This guide | Done, kept current | |
+
+### 9.2 What is planned, and why
+
+| # | Step | Why this step | Exit criterion |
+|---|---|---|---|
+| 1 | **Scale sweep to 500 feeders** across all solvers and tiers | It is the proposal's second deliverable and finds the scalability wall. We have measured 10 and 50 feeders and a few single 200-feeder instances only | Runtime, harm and gap vs lower bound for 10 / 50 / 200 / 500 feeders, per tier |
+| 2 | **Ladder statistics** over many scenarios | The third deliverable is "relaxation measured as a magnitude": how often each rung triggers and how large the relaxation is, by tier | Rung frequency and relaxation size per tier |
+| 3 | **Robustness and stability experiments** using the loop | The fourth deliverable measures thrashing, and the proposal also promised load-error and override-cost tests. The loop now makes them possible | Margin-versus-harm curve, thrashing rate per tier, cost of operator overrides (same episode with and without), effect of breaker failure rate, warm-start effect at 50+ feeders |
+| 4 | **Fix what the evaluation exposes** | Steps 1-3 may show weak spots (for example local search quality at 500 feeders, or a per-slot best-effort instead of the uniform one at rung 3). We fix what the data points to, not what we guess | Decided after steps 1-3 |
+| 5 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. Finished before the report, but after the experiments show which parameters matter | `docs/field-constraints.md` filled, each value sourced |
+| 6 | **Optional explainer**: reason codes ("cut because lowest harm per kW, last cut 6 hours ago") and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used at all, only rewrites it | Every explanation traceable to a logged reason |
+| 7 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
+
+**Why this order.** Steps 1-3 are the measurements the proposal promised, and they decide whether step 4 is needed. Step 5 needs the experiments to show which parameters matter. Step 6 is optional and comes last so it cannot delay the core.
+
+### 9.3 Open questions
+
+- Rung 2 always keeps the downtime relaxation of rung 1. We may want to show the operator a plan with Critical cuts and strict downtime as well.
+- Rung 3 covers the same fraction of the shortfall in every slot. A per-slot best effort could cover more in total.
+- The 2019-onward tier set is built but not compared with the all-years set.
+- Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
 
 ---
 
-## 14. Decision log
+## 10. Assumptions and limits
 
-| Decision | Why |
+**Placeholder values** (in `configs/policy.yaml` or the grid generator; none measured).
+
+| Item | Value |
 |---|---|
-| **Dispatcher is the primary user, field operator secondary** | The dispatcher's judgment is the hard part; a recommender is easier to trust and test than an actuator |
-| **We take the shortfall as input (no forecasting)** | Forecasting is a separate, well-studied problem; mixing them would drift the project toward machine learning |
-| **Shedding is the residual after cheaper options** | Buying power or asking industry to cut may be better than cutting homes |
-| **Critical feeders are "last priority with approval", not "never cut"** | Matches common practice and keeps the human in charge; the tool never auto-cuts Critical |
-| **Fairness rule, Gini and fairness curves dropped** | Fairness is hard to define; the harm of an outage differs by place and person. The convex outage cost spreads cuts within an episode, but **we do not claim equity over days or weeks** |
-| **Network topology dropped** | It added modelling weight without changing the decision; may return in a later extension |
-| **A* baseline dropped** | It answered no research question; replaced by a stronger one (CP-SAT as oracle) |
-| **LLM layer optional and read-only** | The system must not be a black box; the solver computes the explanation, an LLM could only rephrase it |
-| **CP-SAT is an oracle only, never in the decision path** | Our solvers are written from scratch so we can explain them; the oracle gives the answer key |
-| **The solver is untrusted; the verifier decides** | Makes fast heuristic solvers safe to use |
-| **Harm is convex in outage length** | Rotation emerges without a fairness rule |
-| **Percentiles 50/75/95 for tiers** | 50/90/99 produced two nearly identical upper tiers |
-| **Two greedy baselines, report the better** | The first was a strawman; the second mimics manual rotation; neither wins everywhere |
-| **System switching budget scaled with grid size in benchmarks** | A fixed 20 operations is unrealistically tight for 200+ feeders (assumption, to be documented) |
-| **Max downtime counts only what the plan extends** | A past violation cannot be undone by the plan |
-
----
-
-## 15. Assumptions, placeholders and honest limitations
-
-**15.1 Placeholder numbers (all in `configs/policy.yaml` or the grid generator; none are measured).**
-
-| Item | Current value |
-|---|---|
-| Slot / horizon / committed slots | 15 min / 16 slots / 1 |
-| Shift length | 32 slots (8 h) |
+| Slot / horizon / committed slots / shift | 15 min / 16 slots / 1 slot / 32 slots (8 h) |
 | Tier weights (Flexible / Normal / Critical) | 1 / 5 / 1000 |
 | Min cut / min restore / max downtime | 2 / 2 / 12 slots |
-| Switch budget per feeder / system | 3 / 20 per shift (scaled with size in benchmarks) |
+| Switch budget per feeder / system per shift | 3 / 20 (scaled with grid size in benchmarks) |
 | Safety margin | 5% |
 | Restoration surge | 5% + 1% per outage slot, capped at 30% |
-| Harm: outage growth / overshoot cost / switch cost | 0.5 / 0.02 per kW / 1.0 |
+| Harm: outage growth / overshoot / switch | 0.5 / 0.02 per kW / 1.0 |
 | Time-of-day weights | night 1.3, day 1.0, evening peak 1.5 |
 | Feeder mix | 5% Critical, 15% Flexible, 80% Normal |
 | Farm promise | at least 75% of supply-block slots on |
+| Loop | a failed command costs one operation; load error is Gaussian (per-feeder bias plus per-slot noise) |
 
-**15.2 What we do not claim.**
-- We do **not** predict shortfalls.
-- We do **not** guarantee fairness across days or weeks.
-- We do **not** model the electrical network, nor under-frequency shedding.
-- We do **not** claim new algorithms. We claim an application, a field-informed model, a verified implementation and an honest evaluation.
-- We do **not** claim any result on the real grid: feeders are synthetic, and field constraints are not yet validated by operators.
+**What we do not claim.** We do not predict shortfalls. We do not guarantee fairness across days or weeks. We do not model the network or under-frequency shedding. We do not claim new algorithms. We do not claim any result about the real grid: the feeders are synthetic and the field constraints are not yet validated by operators.
 
-**15.3 Known limitations.**
-- Exact search does not scale to hundreds of feeders; this is a finding to report.
-- Harm weights are value judgments; the tool leaves them to the operator.
-- Load estimates are rough in reality; robustness tests are planned, not done.
-- Replanning stability (thrashing) has not been measured yet.
-- Penalty weights for overshoot and switching are tiny next to harm, so they act as tie-breakers; the hard switching budgets and minimum durations do the real anti-thrashing work.
-- The Zenodo ratio distribution is dominated by a few small chronic states.
+**Known limits.** Exact search does not reach hundreds of feeders. Harm weights are value judgments left to the operator. Real load estimates are rougher than our Gaussian model. The scale sweep, systematic robustness study and field validation are not done yet. The Zenodo ratio distribution is dominated by a few small chronic states.
 
 ---
 
-# Part E: Alignment and reference
+## 11. Course map and how to run
 
-## 16. How this project maps to the AI course
+> The syllabus is not attached to the repository. **Replace the left column with the exact unit names** once it is.
 
-> **Note.** The course unit list is not yet attached to this repository. The table below maps topics typical of an introductory AI course. **Replace the left column with the exact unit names from the syllabus** **[TO BE FILLED]**.
-
-| AI course topic | Where it appears in this project |
+| AI course topic | Where it appears |
 |---|---|
-| **Intelligent agents (PEAS)** | The dispatcher-assistant agent: *performance* = minimum weighted harm under the rules; *environment* = grid state, shortfall, feeder history; *actuators* = recommended cut/restore instructions; *sensors* = shortfall, feeder states, elapsed downtime, confirmations |
-| **Problem formulation, state spaces** | Plans as assignments of 800 yes/no variables; the model in section 5 |
-| **Uninformed and informed search** | Depth-first branch-and-bound over feeders; greedy as a heuristic search |
-| **Heuristics, admissibility** | The Lagrangian lower bound is an **admissible** (never over-estimating) heuristic for the best completion |
-| **Constraint satisfaction problems** | Hard and soft constraints, domains, the verifier |
-| **Constraint propagation and consistency** | **Bounds propagation** on the relief sums (pattern deletion until a fixpoint) |
-| **Backtracking and search heuristics** | Branch-and-bound with regret-based variable choice and cheapest-first value ordering |
-| **Local search** | Weighted min-conflicts (**planned**) |
-| **Optimization and soft constraints** | Weighted constraint optimization, the harm objective, the relaxation ladder |
-| **Knowledge representation** | Tiers, feeder types, rules and costs expressed as data in a policy file |
-| **Planning and replanning under uncertainty** | Rolling-horizon loop and history ledger (**planned**) |
-| **Explainable and trustworthy AI** | Independent verifier, reason codes, human override, no black box |
-| **Evaluation methodology** | Optimality gaps against an oracle, lower bounds, scale sweeps, mutation testing |
-| **Generative AI (optional)** | Read-only plain-language explainer (**planned, optional**) |
-| **Machine learning (deliberately kept at the edge)** | Forecasting is an *input* and not our contribution; an ML forecaster or reinforcement-learning comparison is a stretch goal |
+| Intelligent agents (PEAS) | The dispatcher-assistant: *performance* = minimum harm under the rules; *environment* = grid, shortfall, ledger; *actuators* = recommended cut and restore commands; *sensors* = shortfall, states, confirmations |
+| Problem formulation | Section 2: variables, domains, constraints, objective |
+| Uninformed and informed search | Depth-first branch-and-bound; greedy as heuristic search |
+| Heuristics and admissibility | The Lagrangian bound (admissible); cost-effectiveness greedy; regret-based branching |
+| Constraint satisfaction, propagation | Hard and soft constraints; bounds propagation to a fixpoint; why AC-3 does not fit global sums |
+| Backtracking search heuristics | Variable ordering by regret, value ordering by cost |
+| Local search | Weighted min-conflicts, breakout weights, tabu list, strategic oscillation |
+| Optimization, soft constraints | Weighted CSP, harm objective, the relaxation ladder |
+| Knowledge representation | Tiers, types, rules and costs as data in a policy file |
+| Planning and replanning under uncertainty | Receding-horizon loop with a ledger and actuation failures |
+| Explainable and trustworthy AI | Independent verifier, human override, ladder transparency, planned reason codes |
+| Evaluation | Optimality gaps against an oracle, lower bounds, brute-force and mutation testing |
+| Machine learning (deliberately at the edge) | Forecasting is an input, not our contribution; reinforcement learning is a possible later comparison |
 
----
-
-## 17. Glossary
-
-| Term | Plain meaning |
-|---|---|
-| **Load shedding** | Deliberately cutting power to some areas to protect the grid |
-| **Shortfall (S)** | How many kW (or MW) short the grid is; our input |
-| **Feeder** | A power line from a substation to many consumers; the unit we switch |
-| **Tier** | Priority class: Flexible (cut first), Normal, Critical (cut last) |
-| **Slot** | A 15-minute time step |
-| **Horizon** | How far ahead we plan (16 slots, 4 hours) |
-| **Commit** | Actually act on the first slot of a plan; the rest is tentative |
-| **Replan / rolling horizon** | Recompute the plan as new information arrives |
-| **Switching budget** | The maximum breaker operations allowed per shift |
-| **Restoration surge** | The extra load when a long-off feeder comes back |
-| **Promised supply hours** | Hours of supply a farm feeder is guaranteed |
-| **Harm** | Our measure of disruption (consumers x outage length x weights) |
-| **Convex cost** | Each extra hour of outage hurts more than the last |
-| **Hard / soft constraint** | A rule that must hold / a rule that may be relaxed, with a reported size |
-| **Relaxation ladder** | The fixed order in which rules are relaxed if no plan satisfies all |
-| **ESCALATE** | Stop and hand the remaining shortfall to the human |
-| **CSP / COP** | Constraint satisfaction / constraint optimization problem |
-| **Propagation** | Deleting choices that cannot be part of any solution |
-| **Branch-and-bound** | Search that skips regions proven unable to beat the best plan found |
-| **Incumbent** | The best valid plan found so far |
-| **Lower bound** | A number no plan can beat |
-| **Lagrangian relaxation** | Replace a coupling rule by a price and solve the pieces separately |
-| **Optimality gap** | How far a plan is from the best possible, in percent |
-| **Oracle** | The trusted answer key (CP-SAT); used offline only |
-| **Verifier** | The small independent checker that approves or rejects plans |
-| **Greedy / sticky greedy** | Simple step-by-step rules used as baselines |
-| **Local search / min-conflicts** | Improve a complete plan by repairing violated spots one at a time |
-| **Thrashing** | Flipping feeders on and off between replans for no real reason |
-| **Dispatcher / SLDC / discom** | Control-room engineer / state load dispatch centre / distribution company |
-| **DSM** | Deviation settlement mechanism: penalties for drawing more or less than scheduled |
-| **UTCI** | A heat-stress index (parked data) |
-| **MW, MU, kW** | Power (1 MW = 1,000 kW) / energy (1 MU = 1 GWh) / power |
-
----
-
-## 18. How to run everything
-
-From the repository root.
+**Run everything** (from the repository root):
 
 ```powershell
-# one-time setup
 pip install -e ".[dev,data,oracle]"
-
-# run all tests (expect 243 passed)
-pytest
-
-# build scenario tiers from the Zenodo files (needs data/raw/...)
+pytest                                            # expect 273 passed (the loop tests take a minute)
 python scripts/build_scenario_tiers.py --percentiles 50 75 95
-python scripts/build_scenario_tiers.py --year-from 2019 --percentiles 50 75 95 --out data/processed/scenarios/tiers_2019.json
-
-# benchmark: baselines and our solver against the CP-SAT oracle
 python -m evaluation.run_gap --sizes 10 --seeds 3 --hours 10 17
 python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --out data/processed/benchmarks/gap_50.csv
 ```
-
----
-
-# Part F: Future sections [TO BE FILLED]
-
-*These sections are intentionally empty. Add them as the work is completed. Keep the same style: plain words first, technical detail second, numbers only from runs we actually did.*
-
-### 19. Weighted min-conflicts local search: design and results
-*(to be filled)*
-
-### 20. Relaxation ladder and ESCALATE: design and results
-*(to be filled)*
-
-### 21. Rolling-horizon replanning loop: design and results
-*(to be filled)*
-
-### 22. Scale sweep to 500 feeders and the scalability wall
-*(to be filled)*
-
-### 23. Robustness tests (load error, thrashing, operator-override cost)
-*(to be filled)*
-
-### 24. Optional plain-language explainer
-*(to be filled)*
-
-### 25. Field validation (operator interviews)
-*(to be filled)*
-
-### 26. Final conclusions and future work
-*(to be filled)*
 
 ---
 
@@ -725,4 +546,5 @@ python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --
 
 | Date | Version | Change |
 |---|---|---|
-| 22 Oct 2026 | 0.1 | First full draft. Covers problem, layer, data and EDA, model, approach, algorithms, verification, results to date (10 and 50 feeders), decisions and limits. Parts F sections left empty on purpose |
+| 22 Oct 2026 | 0.1 | First full draft |
+| 23 Oct 2026 | 0.2 | Rewritten: deeper methodology and algorithm mechanics, decisions explained where made, glossary and duplicate sections removed, loop and ladder added, tracker with reasons and a plan |
