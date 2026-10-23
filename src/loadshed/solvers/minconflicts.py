@@ -49,17 +49,18 @@ class LSResult:
 
 def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int = 0,
                         max_iters: int | None = None, relax_downtime_if_infeasible: bool = True,
-                        sample: int = 6, force_relaxed: bool = False) -> LSResult:
+                        sample: int = 6, force_relaxed: bool = False,
+                        warm_start: Schedule | None = None) -> LSResult:
     """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
     deadline = t0 + time_limit_s
     if force_relaxed:
-        r = _search(problem, False, deadline, max_iters, seed, sample)
+        r = _search(problem, False, deadline, max_iters, seed, sample, warm_start)
         return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
                         r.iterations, r.restarts, perf_counter() - t0)
-    r = _search(problem, True, t0 + 0.7 * time_limit_s, max_iters, seed, sample)
+    r = _search(problem, True, t0 + 0.7 * time_limit_s, max_iters, seed, sample, warm_start)
     if r.schedule is None and relax_downtime_if_infeasible:
-        r2 = _search(problem, False, deadline, max_iters, seed, sample)
+        r2 = _search(problem, False, deadline, max_iters, seed, sample, warm_start)
         r = LSResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.start_objective,
                      r.iterations + r2.iterations, r.restarts + r2.restarts, 0.0)
     return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
@@ -67,7 +68,7 @@ def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int 
 
 
 def _search(problem: Problem, strict: bool, deadline: float, max_iters: int | None,
-            seed: int, sample: int) -> LSResult:
+            seed: int, sample: int, warm_start: Schedule | None = None) -> LSResult:
     pol, H = problem.policy, problem.policy.horizon_slots
     feeders = problem.feeders
     n = len(feeders)
@@ -89,14 +90,23 @@ def _search(problem: Problem, strict: bool, deadline: float, max_iters: int | No
 
     # ---------------- starting point: the greedy baselines
     best_sched, best_obj, start_sched, start_h = None, np.inf, None, np.inf
-    for sticky in (False, True):
-        g = solve_greedy(problem, sticky=sticky).schedule
-        h = compute_metrics(problem, g).total_harm
+    plain = None
+    cands = [solve_greedy(problem, sticky=False).schedule, solve_greedy(problem, sticky=True).schedule]
+    if warm_start is not None and set(warm_start.cut) == {f.id for f in feeders} \
+            and all(len(r) == H for r in warm_start.cut.values()):
+        cands.append(warm_start)               # e.g. last cycle's plan shifted forward by one slot
+    for g in cands:
+        if plain is None:
+            plain = g                           # the plain greedy: the fallback start
         v = verify(problem, g)
-        if v.ok and not (strict and v.soft) and h < best_obj:
-            best_sched, best_obj = g, h
-        if h < start_h:
-            start_sched, start_h = g, h
+        if v.ok and not (strict and v.soft):
+            h = compute_metrics(problem, g).total_harm
+            if h < best_obj:
+                best_sched, best_obj = g, h
+            if h < start_h:
+                start_sched, start_h = g, h
+    if start_sched is None:
+        start_sched = plain
     start_objective = best_obj if np.isfinite(best_obj) else None
 
     index = [{p.rows[j].tobytes(): j for j in range(len(p))} for p in pats]

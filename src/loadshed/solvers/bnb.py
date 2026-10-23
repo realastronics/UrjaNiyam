@@ -52,18 +52,19 @@ class BBResult:
 
 def solve_bnb(problem: Problem, time_limit_s: float = 30.0, node_limit: int | None = None,
               relax_downtime_if_infeasible: bool = True, lagrange_iters: int = 100,
-              force_relaxed: bool = False) -> BBResult:
+              force_relaxed: bool = False, warm_start: Schedule | None = None) -> BBResult:
     """force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
     deadline = t0 + time_limit_s
-    r = _run(problem, not force_relaxed, deadline, node_limit, lagrange_iters)
+    r = _run(problem, not force_relaxed, deadline, node_limit, lagrange_iters, warm_start)
     if r.status == "INFEASIBLE" and relax_downtime_if_infeasible:
-        r2 = _run(problem, False, deadline, node_limit, lagrange_iters)
+        r2 = _run(problem, False, deadline, node_limit, lagrange_iters, warm_start)
         r = BBResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes, 0.0)
     return BBResult(r.schedule, r.status, r.mode, r.objective, r.lower_bound, r.nodes, perf_counter() - t0)
 
 
-def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None, lagr_iters: int) -> BBResult:
+def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None, lagr_iters: int,
+         warm_start: Schedule | None = None) -> BBResult:
     pol, H = problem.policy, problem.policy.horizon_slots
     feeders = problem.feeders
     n = len(feeders)
@@ -86,8 +87,12 @@ def _run(problem: Problem, strict: bool, deadline: float, node_limit: int | None
 
     # ---------------- incumbent from the greedy baselines
     ub, best = np.inf, None
-    for sticky in (False, True):
-        g = solve_greedy(problem, sticky=sticky).schedule
+    candidates = [solve_greedy(problem, sticky=sticky).schedule for sticky in (False, True)]
+    if warm_start is not None:                      # e.g. last cycle's plan shifted forward by one slot
+        candidates.append(warm_start)
+    for g in candidates:
+        if set(g.cut) != {f.id for f in feeders} or any(len(r) != H for r in g.cut.values()):
+            continue
         v = verify(problem, g)
         if v.ok and not (strict and v.soft):
             h = compute_metrics(problem, g).total_harm

@@ -79,19 +79,21 @@ def with_approvals(problem: Problem, pairs) -> Problem:
 
 
 # ---------------------------------------------------------------- one attempt
-def _attempt(problem: Problem, relaxed: bool, seconds: float, solver: str, exact_max: int, seed: int):
+def _attempt(problem: Problem, relaxed: bool, seconds: float, solver: str, exact_max: int, seed: int,
+             warm_start: Schedule | None = None):
     """Returns (schedule | None, objective | None, outcome, solver_name, elapsed)."""
     t0 = perf_counter()
     n = len(problem.feeders)
     if solver == "bnb" or (solver == "auto" and n <= exact_max):
-        r = solve_bnb(problem, time_limit_s=seconds, relax_downtime_if_infeasible=False, force_relaxed=relaxed)
+        r = solve_bnb(problem, time_limit_s=seconds, relax_downtime_if_infeasible=False, force_relaxed=relaxed,
+                      warm_start=warm_start)
         if r.schedule is not None:
             return r.schedule, r.objective, FOUND, "bnb", perf_counter() - t0
         if r.status == "INFEASIBLE":
             return None, None, PROVEN, "bnb", perf_counter() - t0
         # exact search ran out of time with nothing: let local search try with the same budget
     r2 = solve_min_conflicts(problem, time_limit_s=seconds, seed=seed, relax_downtime_if_infeasible=False,
-                             force_relaxed=relaxed)
+                             force_relaxed=relaxed, warm_start=warm_start)
     if r2.schedule is not None:
         return r2.schedule, r2.objective, FOUND, "min_conflicts", perf_counter() - t0
     return (None, None, PROVEN if r2.status == "INFEASIBLE" else NOT_FOUND, "min_conflicts",
@@ -100,12 +102,13 @@ def _attempt(problem: Problem, relaxed: bool, seconds: float, solver: str, exact
 
 # ---------------------------------------------------------------- the ladder
 def solve_ladder(problem: Problem, *, allow_critical_proposals: bool = True, time_limit_s: float = 60.0,
-                 solver: str = "auto", exact_max_feeders: int = 12, seed: int = 0) -> LadderResult:
+                 solver: str = "auto", exact_max_feeders: int = 12, seed: int = 0,
+                 warm_start: Schedule | None = None) -> LadderResult:
     per = max(0.5, time_limit_s / 12)
     attempts: list[Attempt] = []
 
     def run(prob: Problem, relaxed: bool, rung: int, label: str):
-        sched, obj, outcome, name, el = _attempt(prob, relaxed, per, solver, exact_max_feeders, seed)
+        sched, obj, outcome, name, el = _attempt(prob, relaxed, per, solver, exact_max_feeders, seed, warm_start)
         attempts.append(Attempt(rung, label, name, outcome, round(el, 3)))
         return sched, obj
 

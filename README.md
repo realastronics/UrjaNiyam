@@ -12,6 +12,8 @@ src/loadshed/metrics.py the objective (harm) every solver and the oracle share
 src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder),
                         bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch),
                         minconflicts.py (weighted min-conflicts local search, from scratch)
+src/loadshed/loop.py    rolling-horizon loop: ledger, operator events, actuation failures, load error, metrics
+src/loadshed/ladder.py  relaxation ladder: rung 0/1 plans, rung 2 approval proposals, rung 3 ESCALATE
 src/loadshed/verify.py  independent verifier (no solver code, plain loops)
 src/loadshed/sim/       synthetic grid (grid.py), shortfall scenarios (scenarios.py), Zenodo ratios (zenodo.py)
 scripts/                build_scenario_tiers.py -> data/processed/scenarios/tiers.json
@@ -19,7 +21,7 @@ evaluation/             oracle_cpsat.py (CP-SAT answer key, OFFLINE ONLY), run_g
 tests/                  one test per hard rule + history/shift/override cases, grid and data tests
 docs/                   data-sources.md, field-constraints.md (to be written)
 ```
-Planned next: relaxation ladder with operator-approval flow, rolling-horizon loop, scale sweep to 500 feeders, `eval/` (CP-SAT oracle lives here, offline only).
+Planned next: scale sweep to 500 feeders, robustness and thrashing experiments (evaluation/), optional explainer, field validation, `eval/` (CP-SAT oracle lives here, offline only).
 
 ## Run
 ```
