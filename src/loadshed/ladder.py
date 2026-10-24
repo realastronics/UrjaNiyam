@@ -25,6 +25,7 @@ from time import perf_counter
 from .metrics import compute_metrics, required_relief
 from .model import Problem, Schedule, Tier
 from .solvers.bnb import solve_bnb
+from .solvers.hybrid import solve_hybrid
 from .solvers.minconflicts import solve_min_conflicts
 from .solvers.patterns import enumerate_patterns
 from .verify import verify
@@ -81,17 +82,25 @@ def with_approvals(problem: Problem, pairs) -> Problem:
 # ---------------------------------------------------------------- one attempt
 def _attempt(problem: Problem, relaxed: bool, seconds: float, solver: str, exact_max: int, seed: int,
              warm_start: Schedule | None = None):
-    """Returns (schedule | None, objective | None, outcome, solver_name, elapsed)."""
+    """Returns (schedule | None, objective | None, outcome, solver_name, elapsed).
+
+    solver="auto": the hybrid (local search, then exact search started from its plan) up to `exact_max` feeders,
+    local search above that. solver="hybrid" / "bnb" / "ls" force one choice."""
     t0 = perf_counter()
     n = len(problem.feeders)
-    if solver == "bnb" or (solver == "auto" and n <= exact_max):
+    if solver == "hybrid" or (solver == "auto" and n <= exact_max):
+        r = solve_hybrid(problem, time_limit_s=seconds, seed=seed, warm_start=warm_start,
+                         relax_downtime_if_infeasible=False, force_relaxed=relaxed)
+        if r.schedule is not None:
+            return r.schedule, r.objective, FOUND, "hybrid", perf_counter() - t0
+        return (None, None, PROVEN if r.status == "INFEASIBLE" else NOT_FOUND, "hybrid", perf_counter() - t0)
+    if solver == "bnb":
         r = solve_bnb(problem, time_limit_s=seconds, relax_downtime_if_infeasible=False, force_relaxed=relaxed,
                       warm_start=warm_start)
         if r.schedule is not None:
             return r.schedule, r.objective, FOUND, "bnb", perf_counter() - t0
         if r.status == "INFEASIBLE":
             return None, None, PROVEN, "bnb", perf_counter() - t0
-        # exact search ran out of time with nothing: let local search try with the same budget
     r2 = solve_min_conflicts(problem, time_limit_s=seconds, seed=seed, relax_downtime_if_infeasible=False,
                              force_relaxed=relaxed, warm_start=warm_start)
     if r2.schedule is not None:

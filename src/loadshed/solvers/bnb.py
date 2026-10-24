@@ -56,12 +56,11 @@ def solve_bnb(problem: Problem, time_limit_s: float = 30.0, node_limit: int | No
               force_relaxed: bool = False, warm_start: Schedule | None = None,
               patterns: list | None = None) -> BBResult:
     """time_limit_s is the budget for the SEARCH (greedy start, root bound, tree search); building the valid
-    patterns is reported separately as setup_s. `patterns` = strict-mode patterns already built by
-    build_patterns(problem, True), to share the setup between solvers.
+    patterns is reported separately as setup_s. `patterns` = patterns already built by
+    build_patterns(problem, strict) for the FIRST mode this call runs (strict, or relaxed if force_relaxed).
     force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
-    r = _run(problem, not force_relaxed, time_limit_s, node_limit, lagrange_iters, warm_start,
-             patterns if not force_relaxed else None)
+    r = _run(problem, not force_relaxed, time_limit_s, node_limit, lagrange_iters, warm_start, patterns)
     setup = r.setup_s
     if r.status == "INFEASIBLE" and relax_downtime_if_infeasible:
         r2 = _run(problem, False, time_limit_s, node_limit, lagrange_iters, warm_start, None)

@@ -51,21 +51,24 @@ class LSResult:
 def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int = 0,
                         max_iters: int | None = None, relax_downtime_if_infeasible: bool = True,
                         sample: int = 6, force_relaxed: bool = False,
-                        warm_start: Schedule | None = None, patterns: list | None = None) -> LSResult:
+                        warm_start: Schedule | None = None, patterns: list | None = None,
+                        patience: int | None = None) -> LSResult:
     """time_limit_s is the budget for the SEARCH (greedy start and local search); building the valid
-    patterns is reported separately as setup_s. `patterns` = strict-mode patterns already built by
-    build_patterns(problem, True), to share the setup between solvers.
-    force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
+    patterns is reported separately as setup_s. `patterns` = patterns already built by
+    build_patterns(problem, strict) for the FIRST mode this call runs (strict, or relaxed if force_relaxed).
+    force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder.
+    patience: stop early when the best plan has not improved for this many iterations (used by the hybrid so an
+    easy instance hands over to the exact search quickly). None = run until the time limit."""
     t0 = perf_counter()
     if force_relaxed:
-        r = _search(problem, False, time_limit_s, max_iters, seed, sample, warm_start, None)
+        r = _search(problem, False, time_limit_s, max_iters, seed, sample, warm_start, patterns, patience)
         return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
                         r.iterations, r.restarts, perf_counter() - t0, r.setup_s)
-    r = _search(problem, True, 0.7 * time_limit_s, max_iters, seed, sample, warm_start, patterns)
+    r = _search(problem, True, 0.7 * time_limit_s, max_iters, seed, sample, warm_start, patterns, patience)
     if r.schedule is None and relax_downtime_if_infeasible:
         spent = perf_counter() - t0 - r.setup_s
         r2 = _search(problem, False, max(0.3 * time_limit_s, time_limit_s - spent), max_iters, seed, sample,
-                     warm_start, None)
+                     warm_start, None, patience)
         r = LSResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.start_objective,
                      r.iterations + r2.iterations, r.restarts + r2.restarts, 0.0, r.setup_s + r2.setup_s)
     return LSResult(r.schedule, r.status, r.mode, r.objective, r.start_objective,
@@ -73,7 +76,8 @@ def solve_min_conflicts(problem: Problem, time_limit_s: float = 10.0, seed: int 
 
 
 def _search(problem: Problem, strict: bool, budget_s: float, max_iters: int | None,
-            seed: int, sample: int, warm_start: Schedule | None = None, pats: list | None = None) -> LSResult:
+            seed: int, sample: int, warm_start: Schedule | None = None, pats: list | None = None,
+            patience: int | None = None) -> LSResult:
     pol, H = problem.policy, problem.policy.horizon_slots
     feeders = problem.feeders
     n = len(feeders)
@@ -171,6 +175,8 @@ def _search(problem: Problem, strict: bool, budget_s: float, max_iters: int | No
     it, restarts, last_improve = 0, 0, 0
     restart_after = max(3000, 40 * n)
     while perf_counter() < deadline and (max_iters is None or it < max_iters):
+        if patience is not None and best_sched is not None and it - last_improve > patience:
+            break                                            # converged: nothing better for `patience` iterations
         it += 1
         deficit = np.maximum(0.0, need - net_tot)
         viol = float(budget_excess(ev_tot, nf_tot))

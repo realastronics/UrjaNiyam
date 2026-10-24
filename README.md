@@ -11,7 +11,8 @@ src/loadshed/policy.py  loads and validates the YAML
 src/loadshed/metrics.py the objective (harm) every solver and the oracle share
 src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder),
                         bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch),
-                        minconflicts.py (weighted min-conflicts local search, from scratch)
+                        minconflicts.py (weighted min-conflicts local search, from scratch),
+                        hybrid.py (local search first, then branch-and-bound started from its plan)
 src/loadshed/loop.py    rolling-horizon loop: ledger, operator events, actuation failures, load error, metrics
 src/loadshed/ladder.py  relaxation ladder: rung 0/1 plans, rung 2 approval proposals, rung 3 ESCALATE
 src/loadshed/verify.py  independent verifier (no solver code, plain loops)
