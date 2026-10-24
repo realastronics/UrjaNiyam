@@ -5,11 +5,38 @@
 | | |
 |---|---|
 | **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
-| **Last updated** | 23 October 2026 (version 0.2) |
-| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, a CP-SAT answer key, the relaxation ladder and the rolling-horizon loop are built. 273 automated tests pass. Large-scale evaluation, robustness experiments, an optional explainer and field validation remain. |
+| **Last updated** | 24 October 2026 (version 0.3) |
+| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop and the scale-sweep tooling are built. 275 automated tests pass. A first scale sweep (10 to 500 feeders) is done and a longer one is running. The solver improvements it points to, ladder statistics, robustness experiments, an optional explainer and field validation remain. |
 | **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
 
 Sections marked **[LIVE]** change as results arrive.
+
+---
+
+## In plain words
+
+**What are we doing?** When there is not enough electricity, someone has to choose which areas lose power for a while. Today that choice is mostly made by hand. We are building a helper that suggests the choice, checks that the suggestion follows every rule, and explains it. A person always makes the final call.
+
+**How does it decide?** We write the rules down (never cut a hospital without approval, do not flick a switch every few minutes, do not leave one area dark for hours). We also give every outage a "pain score" that grows the longer people sit without power. Then we look for the plan with the smallest total pain that breaks no rule.
+
+**Why build several solvers?** Because comparing them is how we learn how good our answers are.
+- **Simple rules** (greedy) are what a person might do by habit. They are our yardstick for "is this even worth building?".
+- **Exact search** (branch-and-bound) tries every sensible option and skips the hopeless ones, so it can *prove* it found the best plan. It only works on small grids.
+- **Local search** starts from a plan and keeps making small improvements. It cannot prove anything, but it keeps working on big grids.
+- **CP-SAT** is a strong professional solver from Google. We use it only as a judge.
+
+**Why test with 10, 50, 200 and 500 feeders?** A real area has anything from dozens to hundreds of feeders. We need to know where each method stops working.
+
+**What did we find?**
+1. **10 feeders:** local search and CP-SAT find the best plan in every tier. Our exact search does too, except in the crisis tier, where it ran out of time. The simple rule wastes 3% to 47% extra pain in these tests (typically about 35-40% over many earlier runs).
+2. **50 feeders:** nobody can prove which plan is best. Local search and CP-SAT are about tied. The simple rule wastes roughly 80% to 150% extra.
+3. **200 and 500 feeders:** CP-SAT could not find even one plan at 200 feeders in 30 seconds. Our local search found one every time, at both sizes. The simple rule wastes 50-83% extra in mild and moderate shortfalls, but only 4-15% in a crisis, where almost everything has to be cut anyway and there is little to choose.
+4. **How close to the best possible?** At 10 feeders, where we can check, local search found the best plan every time. At bigger sizes we cannot prove it, but we can say its plan is no more than 22-47% above the best possible.
+
+**What does this change?**
+- Local search becomes the main solver for big grids. Exact search is for small grids and for proofs. CP-SAT stays a judge and is only used up to about 50 feeders.
+- Our lower bound is the measuring stick at every size, because it is cheap (a couple of seconds even at 500 feeders).
+- The sweep exposed three weak spots, so the plan now includes them (section 9.2): give the exact solver a better starting plan, make the setup step faster (30 seconds at 500 feeders, and the rolling-horizon loop repeats it every cycle), and try to tighten the bound.
 
 ---
 
@@ -298,7 +325,7 @@ Only two things connect feeders: the per-slot relief sums and the system switchi
 
 Each pattern carries its cost, its **net relief** per slot (relief minus restoration surge) and its switch events. The total objective becomes **the sum of the chosen patterns' costs plus a constant**: the problem is *separable*, which makes bounds easy. We also discard **dominated** patterns (no cheaper and no better in any slot than another).
 
-**Why.** The search space is no longer 2^800 raw bits but a choice among a few hundred valid rows per feeder, with every single-feeder rule already satisfied. A test checks that, on random problems, the enumeration contains **exactly** the rows the verifier accepts. Cost: setup is about 15 seconds at 500 feeders.
+**Why.** The search space is no longer 2^800 raw bits but a choice among a few hundred valid rows per feeder, with every single-feeder rule already satisfied. A test checks that, on random problems, the enumeration contains **exactly** the rows the verifier accepts. Cost: building all patterns takes about 0.06 s per feeder: 12 s at 500 feeders on our test machine and 30 s on the team's laptop. It is not counted in a solver's time limit (it is reported separately as setup), but the rolling-horizon loop repeats it every cycle (see 9.2).
 
 ### 6.4 Branch-and-bound with bounds propagation
 
@@ -351,7 +378,7 @@ CP-SAT is Google's industrial solver. It combines **constraint programming**, a 
 
 **How we use it.** Our oracle encodes exactly the verifier's rules and the same harm objective: a yes/no variable per (feeder, slot); an integer run-length variable per (feeder, slot), with conditional equalities; start and restore indicators; a table (`element`) constraint for the surge; and conditional constraints for durations and budgets. Numbers are scaled to integers, with loads rounded down and requirements rounded up, so **every oracle answer also passes the verifier**.
 
-**Why only an oracle.** Without a known optimum "solution quality" means nothing; with it we can say "within X% of optimal". Keeping it offline means the product stays explainable, and the project stays our algorithms, graded against a trusted one. We also test the oracle itself: on random tiny problems it must equal a **brute-force** enumeration of every schedule (section 7).
+**Why only an oracle.** Without a known optimum "solution quality" means nothing; with it we can say "within X% of optimal". Keeping it offline means the product stays explainable, and the project stays our algorithms, graded against a trusted one. **Its practical limit:** at 200 feeders, on 4 cores with a starting plan as a hint, it found no plan in 30 seconds, so we use it to grade grids of up to about 50 feeders and use bounds above that. We also test the oracle itself: on random tiny problems it must equal a **brute-force** enumeration of every schedule (section 7).
 
 ### 6.7 The ladder in practice
 
@@ -400,7 +427,7 @@ For a safety tool, "it ran" is not evidence. Five checks, each guarding against 
 
 ## 8. Results so far [LIVE]
 
-**How to read the numbers.** *Gap* is how much **more harm** a plan has than the best known plan (100% means twice the harm). Everything uses our **synthetic grid**, the three tiers (3%, 7%, 20%), start times 10:00 and 17:00, and the placeholder policy. The system switching budget is `max(20, 0.6 x feeders)`. All figures are **medians** unless stated, on one machine with short time limits.
+**How to read the numbers.** *Gap* is how much **more harm** a plan has than a reference, in percent (100% means twice the harm). Two references are used. The **best plan any solver found** gives a gap that is *at least* this big. The **best proven lower bound** gives a gap that is *at most* this big. The true gap lies between, so we show both as "a .. b". Everything uses the **synthetic grid**, the three tiers (3%, 7%, 20%) and the placeholder policy. The system switching budget is `max(20, 0.6 x feeders)`. Time limits count the **search only**; building the patterns is reported separately as setup. Timings depend on the machine: setting up 500 feeders took 12 s on our test machine and 30 s on the team's 4-core laptop.
 
 ### 8.1 Ten feeders (the true optimum is known)
 
@@ -424,9 +451,41 @@ Branch-and-bound returned the oracle's optimum wherever it finished. Local searc
 | Moderate | 0/4 | 97% and 178% | 87% | **4.6%** | 46% |
 | Crisis | 0/4 | 100% and 138% | 4.4% | **2.8%** | 45% |
 
-The "between" interval uses the best solution anyone found (the gap is at least this) and the best proven lower bound (the gap is at most this), so the true gap lies inside it. One larger test: at 200 feeders, local search cut the harm of the best greedy plan from 6,706 to 3,763 (mild) and from 56,498 to 50,867 (crisis) in 40 seconds (single instance each).
+The "between" interval uses the best solution anyone found (the gap is at least this) and the best proven lower bound (the gap is at most this), so the true gap lies inside it. 
 
-### 8.3 The rolling-horizon loop
+### 8.3 The scale sweep, 10 to 500 feeders (first run)
+
+One instance per cell (seed 0, 17:00) on the team's 4-core laptop. Limits: local search 20 s (its main phase gets 14 s), branch-and-bound 30 s, CP-SAT 30 s. Above 50 feeders branch-and-bound runs only to its root lower bound, and CP-SAT is skipped at 500. **A longer run with two seeds is in progress, so treat this as indicative.**
+
+**Time (seconds):**
+
+| Feeders | Pattern setup | Greedy baselines | Local search | Branch-and-bound | CP-SAT |
+|---|---|---|---|---|---|
+| 10 | 0.7-1.1 | under 0.1 | 14 (its budget) | 1-5, proved 2 of 3 tiers; crisis hit the 30 s limit | 2-25, proved all 3 |
+| 50 | 3.6-4.9 | under 0.1 | 14 | hit the limit, proved none | hit the limit, proved none |
+| 200 | about 12 | under 0.1 | 14 | 0.6-0.8 (root bound only) | hit the limit; **found no plan** |
+| 500 | 30-33 | 0.1-0.8 | 14 | 2.3-2.4 (root bound only) | not run |
+
+**Quality** (gap in % versus the best plan found .. versus the best proven bound):
+
+| Feeders | Tier | Best greedy | Local search | CP-SAT | Window |
+|---|---|---|---|---|---|
+| 10 | mild | 47 .. 47 | 0 .. 0 | 0 .. 0 | 0 |
+| 10 | moderate | 3 .. 3 | 0 .. 0 | 0 .. 0 | 0 |
+| 10 | crisis | 11 .. 11 | 0 .. 0 | 0 .. 0 | 0 |
+| 50 | mild | 151 .. 240 | 0 .. 36 | 5 .. 42 | 36 |
+| 50 | moderate | 91 .. 159 | 7 .. 45 | 0 .. 36 | 36 |
+| 50 | crisis | 79 .. 107 | 0 .. 16 | 4 .. 20 | 16 |
+| 200 | mild | 71 .. 152 | 0 .. 47 | no plan | 47 |
+| 200 | moderate | 50 .. 88 | 0 .. 26 | no plan | 26 |
+| 200 | crisis | 4 .. 28 | 0 .. 23 | no plan | 23 |
+| 500 | mild | 83 .. 150 | 0 .. 37 | not run | 37 |
+| 500 | moderate | 56 .. 102 | 0 .. 29 | not run | 29 |
+| 500 | crisis | 15 .. 40 | 0 .. 22 | not run | 22 |
+
+**Window** = (best plan found - best proven bound) / best bound. It measures how tightly *anyone* can pin down the optimum. A window of 0 means the optimum is known.
+
+### 8.4 The rolling-horizon loop
 
 Measured on 6-feeder episodes. These show behaviour; they are not yet a systematic study.
 
@@ -436,13 +495,15 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - **Safety margin trade-off.** With 20% load-estimate error, a 5% margin left 273 kW-slots unserved while a 40% margin left none, at **2.5 times the harm** (16,880 versus 42,271) on one scenario. The margin is insurance with a measurable price.
 - **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way. Its value for local search at 50+ feeders is untested.
 
-### 8.4 What this means
+### 8.5 What this means
 
-1. **A simple rule leaves a lot on the table.** The better baseline spends 34-41% more harm than the optimum at 10 feeders and roughly 90-175% more at 50 (synthetic data; this shows potential, not a real saving).
-2. **Our exact solver is correct**, and agrees with the independent oracle wherever both finish.
-3. **Exact search hits a wall by 50 feeders** in our setup. Local search, written to continue where it stops, is within about 3-6% of the best solution found by any solver, in 7 seconds.
-4. **Sticky greedy breaks in a crisis at 50 feeders** (gap near 1,300%) by exhausting the switching budget, so the plain greedy is the better baseline there. This is why we report both.
-5. **Honest caveat:** one machine, short limits, a synthetic grid and placeholder parameters. These results show the methods work and where they strain, not what a real grid would do.
+1. **Local search is the workhorse beyond about 50 feeders.** It found a plan at every size, matched the proven optimum at 10 feeders in all three tiers, and at 50 feeders it either led or was within 7% of CP-SAT, in less time.
+2. **CP-SAT has a practical limit.** It found no plan at 200 feeders in 30 seconds, even with a starting plan. We therefore use it to grade grids up to about 50 feeders, and above that we grade against our own lower bound.
+3. **Exact search is for small grids and for proofs.** It proves 10 feeders in seconds, except in a crisis, where it did not even improve on the greedy plan in 30 seconds while CP-SAT proved the optimum. A weak starting plan and a weak crisis bound explain it, and both can be improved (9.2, steps 2 and 4).
+4. **The cheap lower bound is the measuring stick at every size.** It costs 0.6-2.4 seconds at 200-500 feeders. The window does not grow steadily with size (16-36% at 50 feeders, 23-47% at 200, 22-37% at 500), so we cannot certify a local-search plan tighter than that, but we can always say how far it could be from the best possible.
+5. **How much optimizing helps depends on the scenario.** In mild and moderate shortfalls there are many ways to cover the need, and the simple rule wastes 50-150% at 50-500 feeders. In a crisis at 200-500 feeders almost everything has to be cut, there is little choice, and the simple rule is only 4-15% worse.
+6. **Setup is now the largest fixed cost**: 30 seconds at 500 feeders on the laptop. A 15-minute cycle can absorb that, but the rolling-horizon loop repeats it every cycle, which makes experiments with 50+ feeders slow (9.2, step 3).
+7. **Honest caveats.** One instance per cell and one start time in the sweep; synthetic grid; placeholder parameters; one machine. These results show where each method works and where it strains, not what a real grid would do.
 
 ---
 
@@ -461,21 +522,27 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 | 7 | **Weighted min-conflicts** local search | Done | Exact search stops at about 50 feeders; this continues beyond |
 | 8 | **Relaxation ladder** with operator approval and ESCALATE | Done | Needed before the loop, so every cycle always returns a usable, honest answer |
 | 9 | **Rolling-horizon loop** | Done | Turns the solvers into a working system and makes history-based rules real |
-| 10 | This guide | Done, kept current | |
+| 10 | Scale-sweep tooling (time limits now exclude setup; shared patterns; resumable CSV; figures) | Done | The sweep is the proposal's second deliverable. Counting setup inside the time limit would have starved the local search at 500 feeders |
+| 11 | First scale sweep, 10 to 500 feeders | Done (1 instance per cell); the longer 2-seed run is in progress | Shows where each method works, which decides the next steps |
+| 12 | This guide | Done, kept current | |
 
 ### 9.2 What is planned, and why
 
-| # | Step | Why this step | Exit criterion |
-|---|---|---|---|
-| 1 | **Scale sweep to 500 feeders** across all solvers and tiers | It is the proposal's second deliverable and finds the scalability wall. We have measured 10 and 50 feeders and a few single 200-feeder instances only | Runtime, harm and gap vs lower bound for 10 / 50 / 200 / 500 feeders, per tier |
-| 2 | **Ladder statistics** over many scenarios | The third deliverable is "relaxation measured as a magnitude": how often each rung triggers and how large the relaxation is, by tier | Rung frequency and relaxation size per tier |
-| 3 | **Robustness and stability experiments** using the loop | The fourth deliverable measures thrashing, and the proposal also promised load-error and override-cost tests. The loop now makes them possible | Margin-versus-harm curve, thrashing rate per tier, cost of operator overrides (same episode with and without), effect of breaker failure rate, warm-start effect at 50+ feeders |
-| 4 | **Fix what the evaluation exposes** | Steps 1-3 may show weak spots (for example local search quality at 500 feeders, or a per-slot best-effort instead of the uniform one at rung 3). We fix what the data points to, not what we guess | Decided after steps 1-3 |
-| 5 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. Finished before the report, but after the experiments show which parameters matter | `docs/field-constraints.md` filled, each value sourced |
-| 6 | **Optional explainer**: reason codes ("cut because lowest harm per kW, last cut 6 hours ago") and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used at all, only rewrites it | Every explanation traceable to a logged reason |
-| 7 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
+The sweep changed the plan. Steps 2-4 did not exist before it; each exists because of a specific finding.
 
-**Why this order.** Steps 1-3 are the measurements the proposal promised, and they decide whether step 4 is needed. Step 5 needs the experiments to show which parameters matter. Step 6 is optional and comes last so it cannot delay the core.
+| # | Step | Why (what we saw) | Exit criterion |
+|---|---|---|---|
+| 1 | **Finish and analyse the longer sweep** (2 seeds) | The first run has one instance per cell, so it is indicative only | Medians over 2 or more seeds, with the figures |
+| 2 | **Start branch-and-bound from the local-search plan** | In a crisis at 10 feeders the exact solver did not improve on the greedy plan in 30 s, while local search found the optimum. A better starting plan lets it prune more. The warm-start hook already exists | It proves more instances at 10-20 feeders and is never worse than the local-search plan |
+| 3 | **Faster pattern setup**: cache the valid rows by feeder state and compute costs in bulk | Setup is the biggest fixed cost (30 s at 500 feeders) and the loop repeats it every cycle, which makes loop experiments at 50+ feeders impractical | At least 5 times faster at 500 feeders, with patterns identical to today's (tests) |
+| 4 | **Tighter lower bound** (time-boxed) | The window is 16-47% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak | A smaller window at 50-500 feeders, and a test that the bound never exceeds a known optimum |
+| 5 | **Ladder statistics** over many scenarios | The third deliverable: how often each rung triggers, and how big each relaxation is, by tier | Rung frequency and relaxation size per tier |
+| 6 | **Robustness and stability experiments** with the loop, at 50+ feeders | The fourth deliverable. Needs step 3 to be practical | Margin-versus-harm curve, thrashing rate per tier, cost of operator overrides (same episode with and without), effect of breaker failure rate, warm-start effect with local search |
+| 7 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. Done after the experiments show which parameters matter | `docs/field-constraints.md` filled, each value sourced |
+| 8 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
+| 9 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
+
+**Why this order.** Steps 2-4 improve the tools, and steps 5-6 use them, so the improvements come first. Step 4 is time-boxed: if a tighter bound is not found quickly, the report states the window honestly instead. Step 8 is optional and last so it cannot delay the core.
 
 ### 9.3 Open questions
 
@@ -483,6 +550,7 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - Rung 3 covers the same fraction of the shortfall in every slot. A per-slot best effort could cover more in total.
 - The 2019-onward tier set is built but not compared with the all-years set.
 - Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
+- Is it worth making CP-SAT work at 200 feeders (better hint, longer limit)? Current answer: no. It would only serve as a judge there, and our bound already does that job.
 
 ---
 
@@ -534,10 +602,13 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 
 ```powershell
 pip install -e ".[dev,data,oracle]"
-pytest                                            # expect 273 passed (the loop tests take a minute)
+pytest                                            # expect 275 passed (the loop tests take a minute or two)
 python scripts/build_scenario_tiers.py --percentiles 50 75 95
 python -m evaluation.run_gap --sizes 10 --seeds 3 --hours 10 17
 python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --out data/processed/benchmarks/gap_50.csv
+python -m evaluation.run_scale --seeds 1 --ls-time 20 --bnb-time 30 --oracle-time 30   # scale sweep, about 15 min
+python -m evaluation.run_scale --seeds 2 --resume                                         # longer sweep, about 40 min; resumable
+python -m evaluation.plot_scale                                                           # figures from the sweep CSV
 ```
 
 ---
@@ -548,3 +619,4 @@ python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --
 |---|---|---|
 | 22 Oct 2026 | 0.1 | First full draft |
 | 23 Oct 2026 | 0.2 | Rewritten: deeper methodology and algorithm mechanics, decisions explained where made, glossary and duplicate sections removed, loop and ladder added, tracker with reasons and a plan |
+| 24 Oct 2026 | 0.3 | Added the plain-words overview; the scale-sweep results (10 to 500 feeders) and what they mean; the tracker and plan now say which finding led to which step; run commands refreshed |
