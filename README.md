@@ -9,7 +9,7 @@ configs/policy.yaml     every tunable number (tiers, limits, switching budgets, 
 src/loadshed/model.py   data types: Feeder, FeederHistory, Problem, Schedule
 src/loadshed/policy.py  loads and validates the YAML
 src/loadshed/metrics.py the objective (harm) every solver and the oracle share
-src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder),
+src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder; fast cached builder + simple reference),
                         bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch),
                         minconflicts.py (weighted min-conflicts local search, from scratch),
                         hybrid.py (local search first, then branch-and-bound started from its plan)
