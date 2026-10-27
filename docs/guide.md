@@ -1,18 +1,5 @@
 # Urja Niyam: Project Guide
 
-**A load-shedding decision-support system, built as a constraint optimization project for an Artificial Intelligence course.**
-
-| | |
-|---|---|
-| **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
-| **Last updated** | 26 October 2026 (version 0.5) |
-| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, their hybrid, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop, the scale sweep and the ladder statistics are built and run. 369 automated tests pass. The robustness and stability experiments are scripted and still to be run; an optional tighter bound, an optional explainer, calibration of the placeholders and field validation remain. |
-| **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
-
-Sections marked **[LIVE]** change as results arrive.
-
----
-
 ## In plain words
 
 **What are we doing?** When there is not enough electricity, someone has to choose which areas lose power for a while. Today that choice is mostly made by hand. We are building a helper that suggests the choice, checks that the suggestion follows every rule, and explains it. A person always makes the final call.
