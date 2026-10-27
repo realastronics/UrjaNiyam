@@ -92,6 +92,7 @@ class StepLog:
     solve_s: float
     approvals_requested: int
     approvals_granted: int
+    surprises: int = 0               # feeders whose committed action differs from what the previous cycle's plan predicted
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,10 @@ class EpisodeMetrics:
     approvals_granted: int
     quiet_cycles: int
     plan_revision_rate_quiet: float | None
-    short_cycles: int            # on-off-on or off-on-off with the middle state lasting <= 4 slots
+    short_cycles: int            # on-off-on or off-on-off with the middle state <= 4 slots (ALSO counts legitimate rotation)
+    commit_surprises: int        # committed actions the previous plan had not predicted, summed over cycles
+    commit_surprise_rate_quiet: float | None   # share of feeders surprised per QUIET cycle (nothing changed in the world)
+    unplanned_reversals: int     # an unpredicted switch that undoes a switch made at most 4 slots earlier
     cut_slots_mean: float
     cut_slots_max: int
     longest_outage_slots: int
@@ -179,6 +183,9 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
     cut_harm = switch_cost = unserved = overshoot = shed = 0.0
     n_sw = failed_total = escalations = req_total = grant_total = 0
     rung_counts: dict = {}
+    last_sw_slot = {i: None for i in ids}
+    last_sw_dir = {i: None for i in ids}
+    unplanned_rev = 0
     k = 0
     while k < E:
         # ---------- 1. the problem for this cycle
@@ -237,6 +244,10 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
                     cells += 1
                     changed += prev_plan[i][t + shift] != plan[i][t]
             revision = changed / cells if cells else None
+        surprises = 0
+        if plan is not None and prev_plan is not None and k - prev_k < H:
+            off = k - prev_k
+            surprises = sum(1 for i in ids if prev_plan[i][off] != plan[i][0])
         quiet = (prev_k is not None and not any(prev_k < e <= k for e in event_slots) and prev_failed == 0
                  and (cfg.shift_offset0 + k) % pol.shift_slots != 0 and requested == 0)
 
@@ -264,6 +275,13 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
                 else:
                     run[i] += 1
                 executed[i].append(cut[i])
+            for i in ids:                                            # unplanned reversals: a surprise that undoes a recent switch
+                if cut[i] != was_cut[i]:
+                    predicted = (j == 0 and prev_plan is not None and k - prev_k < H and prev_plan[i][k - prev_k] == cut[i])
+                    if (last_sw_slot[i] is not None and g - last_sw_slot[i] <= 4 and last_sw_dir[i] != cut[i]
+                            and not predicted):
+                        unplanned_rev += 1
+                    last_sw_slot[i], last_sw_dir[i] = g, cut[i]
             tod = pol.time_of_day_weights[((cfg.start_slot + g) * pol.slot_minutes // 60) % 24]
             for s in specs:
                 i = s.id
@@ -286,7 +304,8 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
             failed_this_cycle += failed
             steps.append(StepLog(g, res.rung, res.status, quiet and j == 0, revision if j == 0 else None,
                                  switches, failed, S_real, round(net, 1), round(max(0.0, S_real - net), 1),
-                                 solve_s if j == 0 else 0.0, requested if j == 0 else 0, granted if j == 0 else 0))
+                                 solve_s if j == 0 else 0.0, requested if j == 0 else 0, granted if j == 0 else 0,
+                                 surprises if j == 0 else 0))
             done += 1
             if failed or (g + 1) in event_slots:             # something changed: replan now, not at the next cadence point
                 break
@@ -322,7 +341,9 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
         escalations=escalations, approvals_requested=req_total, approvals_granted=grant_total,
         quiet_cycles=len(quiet_steps),
         plan_revision_rate_quiet=(sum(s.plan_revision for s in quiet_steps) / len(quiet_steps)) if quiet_steps else None,
-        short_cycles=short, cut_slots_mean=sum(cut_counts) / max(1, len(cut_counts)),
+        short_cycles=short, commit_surprises=sum(x.surprises for x in steps),
+        commit_surprise_rate_quiet=(sum(x.surprises for x in quiet_steps) / (len(quiet_steps) * len(ids))) if quiet_steps else None,
+        unplanned_reversals=unplanned_rev, cut_slots_mean=sum(cut_counts) / max(1, len(cut_counts)),
         cut_slots_max=max(cut_counts, default=0), longest_outage_slots=longest,
         critical_cut_slots=sum(sum(rows[i]) for i in crit),
         mean_solve_s=sum(solves) / len(solves) if solves else 0.0, max_solve_s=max(solves, default=0.0))

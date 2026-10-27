@@ -133,3 +133,9 @@ def test_warm_start_keeps_plans_valid_and_metrics_are_well_formed():
         assert whole_episode_check(replace(c, warm_start=ws), res).ok
         assert m.replans == 8 and m.total_harm == pytest.approx(m.cut_harm + m.switch_cost)
         assert m.plan_revision_rate_quiet is None or 0.0 <= m.plan_revision_rate_quiet <= 1.0
+        n = len(c.grid.specs)
+        quiet = [x for x in res.steps if x.quiet and x.plan_revision is not None]
+        assert m.commit_surprises == sum(x.surprises for x in res.steps) and m.unplanned_reversals >= 0
+        if quiet:
+            assert m.commit_surprise_rate_quiet == pytest.approx(sum(x.surprises for x in quiet) / (len(quiet) * n))
+            assert 0.0 <= m.commit_surprise_rate_quiet <= 1.0

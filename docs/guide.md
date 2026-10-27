@@ -2,6 +2,17 @@
 
 **A load-shedding decision-support system, built as a constraint optimization project for an Artificial Intelligence course.**
 
+| | |
+|---|---|
+| **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
+| **Last updated** | 26 October 2026 (version 0.5) |
+| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, their hybrid, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop, the scale sweep and the ladder statistics are built and run. 369 automated tests pass. The robustness and stability experiments are scripted and still to be run; an optional tighter bound, an optional explainer, calibration of the placeholders and field validation remain. |
+| **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
+
+Sections marked **[LIVE]** change as results arrive.
+
+---
+
 ## In plain words
 
 **What are we doing?** When there is not enough electricity, someone has to choose which areas lose power for a while. Today that choice is mostly made by hand. We are building a helper that suggests the choice, checks that the suggestion follows every rule, and explains it. A person always makes the final call.
@@ -23,12 +34,13 @@
 3. **200 and 500 feeders:** local search gives the best plans at both sizes. CP-SAT with 60 seconds does find plans at 200 feeders, but they are 28-61% worse than local search. The simple rule wastes 59-90% in mild and moderate shortfalls, but only 8-29% in a crisis, where almost everything has to be cut anyway and there is little to choose.
 4. **How close to the best possible?** At 10 feeders, where we can check, local search found the best plan every time. At bigger sizes we cannot prove it, but we can say its plan is at most 17-48% above the best possible.
 5. **Exact search runs out of steam at about 20 feeders**, even when it starts from a good plan. The hybrid never does worse than either solver alone and sometimes proves one more instance, but it does not move that wall.
+6. **The relaxation ladder** (the part that bends the rules when it must) never had to act for realistic shortfalls: up to 30% of demand every plan satisfied every rule. It starts to act at 40-50% of demand. What triggers it much more easily is constraints: if the operator forces 70% of the ordinary feeders to stay on, it acts even at a 20% shortfall, and halving the maximum downtime halves the shortfall it can absorb.
 
 **What does this change?**
 - Local search is the main solver for big grids. Exact search is for small grids and for proofs. CP-SAT stays a judge, used only up to about 50 feeders.
 - Our lower bound is the measuring stick at every size, because it is cheap (a couple of seconds even at 500 feeders).
 - The setup step used to take 22-33 seconds at 500 feeders and was repeated every cycle of the rolling-horizon loop. We rewrote it, and it now takes under a second. A 50-feeder loop episode runs at 1.5 seconds per cycle, so the stability and robustness experiments are now practical.
-- What remains is to measure how often each relaxation rung is needed, to run those experiments, and (optionally) to try to tighten the bound.
+- The ladder statistics are done. What remains is to run the robustness and stability experiments (the script exists) and, optionally, to try to tighten the bound.
 
 ---
 
@@ -392,7 +404,7 @@ This is the standard idea of **receding-horizon (model-predictive) control**: pl
 4. **Commit only the first slot** and send commands. Each may fail. Real loads differ from estimates by a per-feeder bias plus noise.
 5. **Update the ledger from what happened**, not what was planned. A failed command still costs one switching operation. Counters reset when a new shift starts.
 
-The loop records what was actually suffered (harm, uncovered kW, switches), and two stability measures: the **plan-revision rate on quiet cycles** (how much the new plan changes the overlap with the old one when nothing changed in the world) and **short cycles** (on-off-on or off-on-off with the middle state at most one hour). These measure *plan thrashing*, a known problem in receding-horizon control.
+The loop records what was actually suffered (harm, uncovered kW, switches) and three stability measures. All are about *plan thrashing*, a known problem in receding-horizon control. On **quiet** cycles (nothing changed in the world since the last cycle) it records the **plan-revision rate** (how much of the overlap with the previous plan the new plan changes) and the **commit-surprise rate** (how often the action we commit differs from what the previous plan predicted for this slot, which is what a dispatcher would experience as the plan flip-flopping). Over the whole episode it counts **unplanned reversals**: an unpredicted switch that undoes a switch made at most four slots earlier. An older count, **short cycles** (on-off-on within an hour), is kept but is not used as evidence, because rotating feeders at the 30-minute minimum duration produces it legitimately.
 
 ---
 
@@ -498,9 +510,46 @@ On our own test machine an earlier run with two seeds showed more: 2 of 6 proofs
 
 - **Setup:** 2.4 s to 0.15 s at 100 feeders (16 times faster) and about 12 s to 0.7 s at 500 feeders on our test machine, with **identical patterns**. We have not yet re-measured it on the team's laptop.
 - **The loop at 50 feeders** (12 slots, one replan per slot, local search): the episode runs in 18 s, which is 1.5 s per cycle. A first look at warm-starting (one episode, so indicative only): plan revision in quiet cycles 0.1% with warm start against 1.7% without, switches 13 against 15, harm 1,060 against 1,066.
-- **A caveat on the thrashing measure.** "Short cycles" (on-off-on within an hour) counted 5 and 6 in those episodes, but with a 30-minute minimum duration, rotating feeders legitimately produce such patterns. The measure needs refining before it is used as evidence of thrashing (9.2, step 2).
+- **Thrashing measures.** The first measure, "short cycles", also counted legitimate rotation (5 and 6 in those episodes), so it was replaced by commit surprise and unplanned reversals (6.8). In a first quiet 16-slot episode with 6 feeders, 6.7% of feeder-cycles were surprises and there were no unplanned reversals, while short cycles counted 2. The experiments in 9.2 use the new measures.
 
-### 8.6 The rolling-horizon loop
+### 8.6 The relaxation ladder under stress
+
+Four instances per case (seeds 0-3, 17:00), 20 and 50 feeders, 24 s per ladder call. The data-derived tiers (3-20% of demand) would stay at rung 0, so we push on the ladder in three ways: a **ratio** sweep (shortfall from 3% to 90% of demand), an **override** sweep (a fixed 20% shortfall while the operator forces a growing share of the non-critical feeders to stay ON for the whole horizon) and a **tight** sweep (the ratio sweep again with maximum downtime 6 slots and 2 switches per feeder per shift). Cells show the share of instances ending at rung 0 / 1 / 2 / 3. "Extra slots" is the median total of extra downtime slots over all feeders.
+
+**Ratio sweep** (default policy):
+
+| Shortfall (% of demand) | 20 feeders | 50 feeders | Extra slots, 20 / 50 feeders |
+|---|---|---|---|
+| 3-30% | 100 / 0 / 0 / 0 | 100 / 0 / 0 / 0 | none |
+| 40% | 100 / 0 / 0 / 0 | 25 / 75 / 0 / 0 | none / 40 |
+| 50% | 75 / 25 / 0 / 0 | 0 / 100 / 0 / 0 | 28 / 56 |
+| 60% | 0 / 100 / 0 / 0 | 0 / 100 / 0 / 0 | 20 / 70 |
+| 70% | 0 / 100 / 0 / 0 | 0 / 100 / 0 / 0 | 27 / 99 |
+| 80% | 0 / 100 / 0 / 0 | 0 / 25 / 0 / 75 | 44 / 100 |
+| 90% | 0 / 0 / 25 / 75 | 0 / 0 / 0 / 100 | ESCALATE covers 95% / 84% |
+
+**Override sweep** (20% shortfall; share of non-critical feeders forced ON):
+
+| Forced on | 20 feeders | 50 feeders |
+|---|---|---|
+| 0-30% | 100 / 0 / 0 / 0 | 100 / 0 / 0 / 0 |
+| 50% | 75 / 25 / 0 / 0 (12 extra slots) | 100 / 0 / 0 / 0 |
+| 70% | 25 / 50 / 0 / 25 (8 extra slots; ESCALATE covers 59%) | 75 / 0 / 25 / 0 (1,981 Critical kW-slots to approve) |
+| 90% | 0 / 0 / 0 / 100 (covers 29%) | 0 / 0 / 0 / 100 (covers 29%) |
+
+**Tight policy sweep:**
+
+| Shortfall (% of demand) | 20 feeders | 50 feeders | Extra slots, 20 / 50 feeders |
+|---|---|---|---|
+| 3-10% | 100 / 0 / 0 / 0 | 100 / 0 / 0 / 0 | none |
+| 20% | 100 / 0 / 0 / 0 | 25 / 75 / 0 / 0 | none / 56 |
+| 30-70% | 0 / 100 / 0 / 0 | 0 / 100 / 0 / 0 | 30 to 91 / 78 to 254 |
+| 80% | 0 / 100 / 0 / 0 | 0 / 25 / 0 / 75 | 119 / 257 |
+| 90% | 0 / 0 / 25 / 75 | 0 / 0 / 0 / 100 | ESCALATE covers 95% / 84% |
+
+A ladder call took about 1.5 s at rung 0, 3.5 s at rung 1, and 17-26 s when it reached rung 3 (seven solves for the best-effort search).
+
+### 8.7 The rolling-horizon loop
 
 Measured on 6-feeder episodes. These show behaviour; they are not yet a systematic study.
 
@@ -510,7 +559,7 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - **Safety margin trade-off.** With 20% load-estimate error, a 5% margin left 273 kW-slots unserved while a 40% margin left none, at **2.5 times the harm** (16,880 versus 42,271) on one scenario. The margin is insurance with a measurable price.
 - **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way. Its value for local search at 50+ feeders is untested.
 
-### 8.7 What this means
+### 8.8 What this means
 
 1. **Local search is the workhorse beyond about 20 feeders.** It found a plan at every size and matched the proven optimum at 10 feeders in all three tiers. At 50 feeders CP-SAT with 60 s is a little ahead (0-1% against 3-7% above the best plan found), and from 200 feeders up local search leads clearly.
 2. **CP-SAT has a practical limit.** At 200 feeders its plans are 28-61% worse than local search even with 60 s and a starting plan. We use it to grade grids up to about 50 feeders, and above that we grade against our own lower bound.
@@ -518,7 +567,10 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 4. **The cheap lower bound is the measuring stick at every size.** It costs 0.4-1.7 seconds at 200-500 feeders. The window does not grow steadily with size (16-34% at 50 feeders, 17-48% at 200, 25-34% at 500), so we cannot certify a local-search plan tighter than that, but we can always say how far it could be from the best possible.
 5. **How much optimizing helps depends on the scenario.** In mild and moderate shortfalls there are many ways to cover the need, and the simple rule wastes 59-140% at 50-500 feeders. In a crisis at 200-500 feeders almost everything has to be cut and there is less choice, so the simple rule is 8-29% worse.
 6. **Setup used to be the largest fixed cost and no longer is.** The loop can now run 50+ feeders at about a second and a half per cycle, which makes the robustness and stability experiments practical.
-7. **Honest caveats.** Two instances per cell and one start time in the sweep; synthetic grid; placeholder parameters; one machine. These results show where each method works and where it strains, not what a real grid would do.
+7. **The ladder is insurance, not a daily feature.** Every realistic shortfall (up to 30% of demand; the data's 99.9th percentile is 32%) stayed at rung 0 at both sizes. The first relaxation appears at 40-50% of demand and escalation at 80-90%.
+8. **Constraints stress the ladder more than the size of the shortfall.** Forcing 70% of the non-critical feeders on triggers relaxation at only a 20% shortfall, and halving the maximum downtime (with fewer switches) moves the first relaxation from 40-50% down to 20-30%. Relaxation is mostly rung 1; Critical approvals are rare; and when the tool escalates it still covers 84-95% (ratio sweep) or 29-59% (override sweep) of the shortfall without cutting any Critical feeder.
+9. **Limits of these ladder numbers.** Above 12 feeders local search cannot prove that a strict plan does not exist, so rung 1 and 2 outcomes are labelled "not found" rather than "proven impossible", and the relaxation sizes are upper bounds (a better search might need less). Sizes are totals over feeders, not normalised per feeder.
+10. **Honest caveats.** Two instances per cell (four for the ladder) and one start time; synthetic grid; placeholder parameters; one machine. These results show where each method works and where it strains, not what a real grid would do.
 
 ---
 
@@ -540,20 +592,21 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 | 10 | Scale-sweep tooling and the sweep itself (10 to 500 feeders, 2 seeds) | Done | The proposal's second deliverable. It showed where each method works and drove steps 11-12 |
 | 11 | **Hybrid solver** (local search, then branch-and-bound from its plan) | Done | The sweep showed the exact solver failing to improve on a weak starting plan in a crisis |
 | 12 | **Fast pattern setup** (cached rows, bulk arithmetic, cached dominance) | Done | Setup was the largest fixed cost (22-33 s at 500 feeders) and the loop repeats it every cycle |
-| 13 | This guide | Done, kept current | |
+| 13 | **Ladder statistics** (three stress families, 20 and 50 feeders, 4 seeds) | Done | The third deliverable. Realistic shortfalls never needed it, so we stressed it with overrides and stricter rules |
+| 14 | Refined stability measures (commit surprise, unplanned reversals) and the **robustness experiment script** | Built; experiments still to be run | The old thrashing count also counted legitimate rotation, so it could not be used as evidence. The loop is now fast enough to run the experiments |
+| 15 | This guide | Done, kept current | |
 
 ### 9.2 What is planned, and why
 
 | # | Step | Why | Exit criterion |
 |---|---|---|---|
-| 1 | **Ladder statistics** over many scenarios | The third deliverable: how often each rung triggers and how big each relaxation is, by tier. The ladder and the fast setup make hundreds of scenarios affordable | Rung frequency and relaxation size per tier |
-| 2 | **Robustness and stability experiments** with the loop, at 50+ feeders. First **refine the thrashing measure** | The fourth deliverable. The loop now runs at about 1.5 s per cycle at 50 feeders. The current short-cycle count also counts legitimate rotation, so it cannot yet serve as evidence | A margin-versus-harm curve, thrashing rate per tier (with a measure that ignores legitimate rotation), cost of operator overrides (same episode with and without), effect of breaker failure rate, warm start versus none with local search over several episodes |
-| 3 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It is optional because the results are already informative, and it comes after the two deliverables | A smaller window at 50-500 feeders, and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
-| 4 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. Done after the experiments show which parameters matter | `docs/field-constraints.md` filled, each value sourced |
-| 5 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
-| 6 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
+| 1 | **Run the robustness and stability experiments** (`evaluation/run_robustness.py`) | The fourth deliverable. Four experiments: safety margin against load-estimate error, warm start against none (commit surprise and plan revision on quiet cycles), operator overrides (same episode with and without), breaker failure rate | A margin-versus-harm table, stability measures per tier, the cost of overrides, and the effect of failures; each stated with its caveats |
+| 2 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It is optional because the results are already informative and it comes after the experiments | A smaller window at 50-500 feeders, and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
+| 3 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. The ladder and robustness results show which parameters matter most (maximum downtime, switching budgets, how often operators override) | `docs/field-constraints.md` filled, each value sourced |
+| 4 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
+| 5 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
 
-**Why this order.** The tool improvements that the sweep called for (hybrid, fast setup) are done, so the planned work now uses the tools: the two promised experiments first, then the optional bound work, then calibration and the report. The explainer is optional and last so it cannot delay the core.
+**Why this order.** The tool improvements the sweep called for are done and the ladder is measured, so what remains of the promised deliverables is the robustness and stability study. The optional bound work comes after it, calibration after the experiments have shown which parameters matter, and the optional explainer last so it cannot delay the core.
 
 ### 9.3 Open questions
 
@@ -562,6 +615,8 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - The 2019-onward tier set is built but not compared with the all-years set.
 - Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
 - The fast setup is measured on our test machine only; re-measure on the team's laptop.
+- Ladder follow-ups (optional): normalise relaxation sizes per feeder; certify rung failures above 12 feeders (a dual bound that proves a strict plan cannot exist would turn "not found" into "proven impossible").
+- The ladder stays at rung 0 for realistic shortfalls under our placeholder policy. Whether real downtime limits and switching budgets are tighter than ours is exactly what field validation should tell us.
 - Is it worth making CP-SAT work better at 200 feeders? Current answer: no. It would only serve as a judge there, and our bound already does that job.
 
 ---
@@ -614,7 +669,7 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 
 ```powershell
 pip install -e ".[dev,data,oracle]"
-pytest                                            # expect 363 passed (a few minutes in total)
+pytest                                            # expect 369 passed (a few minutes in total)
 python scripts/build_scenario_tiers.py --percentiles 50 75 95
 python -m evaluation.run_gap --sizes 10 --seeds 3 --hours 10 17
 python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --out data/processed/benchmarks/gap_50.csv
@@ -622,6 +677,8 @@ python -m evaluation.run_hybrid --sizes 10 20 --seeds 3 --time 20               
 python -m evaluation.run_scale --seeds 1 --ls-time 20 --bnb-time 30 --oracle-time 30   # scale sweep, about 15 min
 python -m evaluation.run_scale --seeds 2 --resume                                         # longer sweep, about 40 min; resumable
 python -m evaluation.plot_scale                                                           # figures from the sweep CSV
+python -m evaluation.run_ladder_stats --seeds 4 --time-limit 24                           # ladder under stress (about 30 min)
+python -m evaluation.run_robustness                                                       # margin, stability, override, failure (about 25 min)
 ```
 
 ---
@@ -634,3 +691,4 @@ python -m evaluation.plot_scale                                                 
 | 23 Oct 2026 | 0.2 | Rewritten: deeper methodology and algorithm mechanics, decisions explained where made, glossary and duplicate sections removed, loop and ladder added, tracker with reasons and a plan |
 | 24 Oct 2026 | 0.3 | Added the plain-words overview; the scale-sweep results (10 to 500 feeders) and what they mean; the tracker and plan now say which finding led to which step; run commands refreshed |
 | 25 Oct 2026 | 0.4 | Two-seed scale sweep, hybrid solver and fast pattern setup added (results, mechanics, tracker and plan updated); plain-words overview refreshed; thrashing-measure caveat recorded |
+| 26 Oct 2026 | 0.5 | Ladder statistics results added (three stress families); stability measures refined (commit surprise, unplanned reversals) and the robustness script described; tracker and plan updated |
