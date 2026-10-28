@@ -581,7 +581,8 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 | 12 | **Fast pattern setup** (cached rows, bulk arithmetic, cached dominance) | Done | Setup was the largest fixed cost (22-33 s at 500 feeders) and the loop repeats it every cycle |
 | 13 | **Ladder statistics** (three stress families, 20 and 50 feeders, 4 seeds) | Done | The third deliverable. Realistic shortfalls never needed it, so we stressed it with overrides and stricter rules |
 | 14 | Refined stability measures (commit surprise, unplanned reversals) and the **robustness experiment script** | Built; experiments still to be run | The old thrashing count also counted legitimate rotation, so it could not be used as evidence. The loop is now fast enough to run the experiments |
-| 15 | This guide | Done, kept current | |
+| 15 | **First calibration pass** of the placeholders from public sources (`docs/field-constraints.md`) | Done; public sources only, no operator validation | Our results are only as credible as the parameters. The ladder results showed which ones matter most, so the search started with those |
+| 16 | This guide | Done, kept current | |
 
 ### 9.2 What is planned, and why
 
@@ -589,7 +590,7 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 |---|---|---|---|
 | 1 | **Run the robustness and stability experiments** (`evaluation/run_robustness.py`) | The fourth deliverable. Four experiments: safety margin against load-estimate error, warm start against none (commit surprise and plan revision on quiet cycles), operator overrides (same episode with and without), breaker failure rate | A margin-versus-harm table, stability measures per tier, the cost of overrides, and the effect of failures; each stated with its caveats |
 | 2 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It is optional because the results are already informative and it comes after the experiments | A smaller window at 50-500 feeders, and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
-| 3 | **Calibrate placeholders** from public tariff orders and discom documents | Our results are only as credible as the grid parameters. The ladder and robustness results show which parameters matter most (maximum downtime, switching budgets, how often operators override) | `docs/field-constraints.md` filled, each value sourced |
+| 3 | **Finish calibration.** The first pass is done. Remaining: take numeric limits (maximum outage, interruptions) from one or two state regulations, run the **sensitivity experiments** the file recommends (restoration surge cap, promise share, maximum downtime, switching budget, a daytime farm block, loss-weighted harm), inspect the candidate feeder-load dataset, and get operator validation when access is possible | The first pass found that our restoration surge is probably low and that the numbers the ladder is most sensitive to (maximum downtime, switching budgets) have no public numeric source. So the report should show the results across a range, not at one value | Each key conclusion stated with the range of parameter values it holds for |
 | 4 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
 | 5 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
 
@@ -602,6 +603,7 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - The 2019-onward tier set is built but not compared with the all-years set.
 - Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
 - The fast setup is measured on our test machine only; re-measure on the team's laptop.
+- A candidate source of real feeder loads and feeder categories (MSEDCL's weekly feeder-wise load PDFs) was found but not inspected. It must not be listed in `docs/data-sources.md` until its columns, units, resolution and licence are recorded.
 - Ladder follow-ups (optional): normalise relaxation sizes per feeder; certify rung failures above 12 feeders (a dual bound that proves a strict plan cannot exist would turn "not found" into "proven impossible").
 - The ladder stays at rung 0 for realistic shortfalls under our placeholder policy. Whether real downtime limits and switching budgets are tighter than ours is exactly what field validation should tell us.
 - Is it worth making CP-SAT work better at 200 feeders? Current answer: no. It would only serve as a judge there, and our bound already does that job.
@@ -625,6 +627,8 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 | Feeder mix | 5% Critical, 15% Flexible, 80% Normal |
 | Farm promise | at least 75% of supply-block slots on |
 | Loop | a failed command costs one operation; load error is Gaussian (per-feeder bias plus per-slot noise) |
+
+**Evidence check on the placeholders.** `docs/field-constraints.md` compares them with public sources. In short: consumers per feeder and 8-hour farm blocks are consistent with the sources; the 75% farm promise is plausible but rests on one episode; the restoration surge cap (30%) is probably low for hot evenings; and maximum downtime, minimum durations and switching budgets have no public numeric source, which is why section 8.6 shows that they matter and why they need operator input.
 
 **What we do not claim.** We do not predict shortfalls. We do not guarantee fairness across days or weeks. We do not model the network or under-frequency shedding. We do not claim new algorithms. We do not claim any result about the real grid: the feeders are synthetic and the field constraints are not yet validated by operators.
 
@@ -679,3 +683,4 @@ python -m evaluation.run_robustness                                             
 | 24 Oct 2026 | 0.3 | Added the plain-words overview; the scale-sweep results (10 to 500 feeders) and what they mean; the tracker and plan now say which finding led to which step; run commands refreshed |
 | 25 Oct 2026 | 0.4 | Two-seed scale sweep, hybrid solver and fast pattern setup added (results, mechanics, tracker and plan updated); plain-words overview refreshed; thrashing-measure caveat recorded |
 | 26 Oct 2026 | 0.5 | Ladder statistics results added (three stress families); stability measures refined (commit surprise, unplanned reversals) and the robustness script described; tracker and plan updated |
+| 26 Oct 2026 | 0.6 | First calibration pass from public sources recorded (tracker, plan, placeholder section); candidate feeder-load dataset noted as not yet inspected |
