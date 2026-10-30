@@ -14,6 +14,8 @@
              ('keep k' forces the k most-cut feeders to stay ON in the middle of the episode; 'cut k' forces k
              otherwise-idle feeders to be cut.)
   failure    breaker failure probability: unserved shortfall, extra switching, how the ladder copes.
+  feedback   meter feedback instead of a big margin: a thin 5% margin plus learning each feeder's real load from its
+             meter, against no feedback with a thin and with a fat margin, at the same load-estimate error.
 
 Each episode is a full rolling-horizon run: replan every slot, commit one slot, simulate the actuation.
 Harm is what was actually suffered (cut harm + switch cost). Unserved = shortfall not covered by REAL relief.
@@ -83,6 +85,15 @@ def jobs(a, pol):
                     for seed in range(a.seeds):
                         yield exp, tier, warm, a.stability_n, seed, lambda scen=scen, warm=warm, seed=seed: build_cfg(
                             pol, a.stability_n, seed, scen.peak_ratio, None, a.episode_slots, a.time_limit, warm_start=warm)
+        elif exp == "feedback":
+            variants = [("no feedback, margin 5%", 0.05, None), ("no feedback, margin 30%", 0.30, None),
+                        ("feedback (alpha 0.7, exact meter), margin 5%", 0.05, (0.7, 0.0)),
+                        ("feedback (alpha 0.3, meter noise 10%), margin 5%", 0.05, (0.3, 0.10))]
+            for sd in a.load_errors:
+                for label, margin, fb in variants:
+                    for seed in range(a.seeds):
+                        yield exp, sd, label, a.n, seed, lambda sd=sd, margin=margin, fb=fb, seed=seed: build_cfg(
+                            pol, a.n, seed, a.ratio, margin, a.episode_slots, a.time_limit, load_error=(sd, 0.0), load_feedback=fb)
         elif exp == "failure":
             for pf in a.failure_probs:
                 for seed in range(a.seeds):
@@ -153,6 +164,15 @@ def summarize(rows):
                 ratio = [r["harm"] / base[int(r["seed"])]["harm"] for r in g if base[int(r["seed"])]["harm"] > 0]
                 print(f"{mode + ' ' + str(k):>10} {len(g):>3} | {med(extra, '{:17.0f}')} {med(ratio, '{:16.1f}x')} | {mean([r['unserved'] for r in g], '{:22.0f}')}")
 
+    if ex("feedback"):
+        print("\n=== feedback: learning real loads from meters instead of insuring with a big margin ===")
+        print(f"{'load error':>10} {'variant':<50} {'eps':>3} | {'median harm':>11} | {'mean unserved kW-slots':>22} | {'episodes with any unserved':>26}")
+        for sd in sorted({r["param1"] for r in ex("feedback")}):
+            for label in dict.fromkeys(r["param2"] for r in ex("feedback") if r["param1"] == sd):
+                g = [r for r in ex("feedback") if r["param1"] == sd and r["param2"] == label]
+                print(f"{float(sd):>10.0%} {label:<50} {len(g):>3} | {med([r['harm'] for r in g], '{:11.0f}')} | "
+                      f"{mean([r['unserved'] for r in g], '{:22.0f}')} | {sum(1 for r in g if r['unserved'] > 0):>20}/{len(g)}")
+
     if ex("failure"):
         print("\n=== failure: breaker failure probability ===")
         print(f"{'fail prob':>9} {'eps':>3} | {'failed cmds':>11} {'extra switches':>14} | {'median harm':>11} {'mean unserved kW-slots':>23} | {'relaxed cycles':>14} {'escalations':>11}")
@@ -168,8 +188,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--policy", default="configs/policy.yaml")
     ap.add_argument("--tiers", default="data/processed/scenarios/tiers.json")
-    ap.add_argument("--experiments", nargs="+", default=["margin", "stability", "override", "failure"],
-                    choices=["margin", "stability", "override", "failure"])
+    ap.add_argument("--experiments", nargs="+", default=["margin", "stability", "override", "failure", "feedback"],
+                    choices=["margin", "stability", "override", "failure", "feedback"])
     ap.add_argument("--n", type=int, default=10, help="grid size for margin, override and failure (10 = exact solver)")
     ap.add_argument("--stability-n", type=int, default=20, help="grid size for stability (above 12 = local search)")
     ap.add_argument("--seeds", type=int, default=3)
