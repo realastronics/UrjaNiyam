@@ -43,7 +43,9 @@ def test_summary_handles_every_experiment(tmp_path, capsys):
     rows = [row(), row(param2="0.3", harm=150.0, seed=1),
             row(experiment="stability", param1="mild", param2="True"), row(experiment="stability", param1="mild", param2="False"),
             row(experiment="override", param1="none", param2="0"), row(experiment="override", param1="keep", param2="1", harm=300.0),
-            row(experiment="failure", param1="0.0", param2="0"), row(experiment="failure", param1="0.2", param2="0", failed=2.0)]
+            row(experiment="failure", param1="0.0", param2="0"), row(experiment="failure", param1="0.2", param2="0", failed=2.0),
+            row(experiment="feedback", param1="0.2", param2="no feedback, margin 5%"),
+            row(experiment="feedback", param1="0.2", param2="feedback (alpha 0.7, exact meter), margin 5%")]
     path = tmp_path / "rob.csv"
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
@@ -51,6 +53,6 @@ def test_summary_handles_every_experiment(tmp_path, capsys):
         w.writerows(rows)
     summarize(load_rows(path))
     out = capsys.readouterr().out
-    for name in ("margin:", "stability:", "override:", "failure:"):
+    for name in ("margin:", "stability:", "override:", "failure:", "feedback:"):
         assert name in out
     assert "3.0x" in out                                   # the override doubled-and-more: 300 / 100
