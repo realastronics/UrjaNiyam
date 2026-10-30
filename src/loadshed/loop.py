@@ -12,6 +12,9 @@ Every cycle:
 Why this matters: the fairness-free rules that depend on time (minimum cut/restore durations, switching
 budgets, maximum downtime) only mean something if the ledger is carried from cycle to cycle.
 
+Optional meter feedback (load_feedback): after each slot every feeder's measured load is compared with the estimate and a
+per-feeder multiplier is smoothed toward the ratio, so persistent estimate errors are learned instead of insured against.
+
 Assumptions (placeholders, see docs): a failed command still consumes one switching operation; agricultural
 promised-hours windows are recomputed from the current horizon each cycle; load error is Gaussian
 (a per-feeder bias plus per-slot noise); a shortfall change is known to the planner only from the slot it happens.
@@ -75,6 +78,7 @@ class EpisodeConfig:
     seed: int = 0
     warm_start: bool = True
     operator: Callable = decline_all
+    load_feedback: tuple[float, float] | None = None   # (smoothing alpha, meter noise sd as a fraction); None = no meter feedback
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,7 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
     est = {s.id: feeder_loads(s, long_pol, cfg.start_slot) for s in specs}          # estimated loads, E+H slots
     demand = [sum(est[i][g] for i in ids) for g in range(E + H)]
     bias = {i: (rng.gauss(0.0, cfg.load_error[0]) if cfg.load_error[0] > 0 else 0.0) for i in ids}
+    corr = {i: 1.0 for i in ids}                         # meter feedback: learned multiplier on each feeder's load estimate
 
     changes = sorted((e for e in cfg.events if isinstance(e, ShortfallChange)), key=lambda e: e.slot)
     overrides = tuple(e for e in cfg.events if isinstance(e, Override))
@@ -190,7 +195,7 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
     while k < E:
         # ---------- 1. the problem for this cycle
         feeders = tuple(
-            Feeder(s.id, s.tier, s.ftype, s.consumers, tuple(est[s.id][k:k + H]),
+            Feeder(s.id, s.tier, s.ftype, s.consumers, tuple(x * corr[s.id] for x in est[s.id][k:k + H]),
                    _promises(s, pol, cfg.start_slot + k)) for s in specs)
         S = tuple(shortfall(g, ratio_at(k)) for g in range(k, k + H))
         forced_cut, forced_keep = set(), set()
@@ -286,6 +291,10 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
             for s in specs:
                 i = s.id
                 true = est[i][g] * (1.0 + bias[i] + (rng.gauss(0.0, cfg.load_error[1]) if cfg.load_error[1] > 0 else 0.0))
+                if cfg.load_feedback is not None and est[i][g] > 0:          # the meter reading corrects the next plans
+                    alpha, msd = cfg.load_feedback
+                    meas = true * (1.0 + (rng.gauss(0.0, msd) if msd > 0 else 0.0))
+                    corr[i] = min(3.0, max(0.3, (1 - alpha) * corr[i] + alpha * meas / est[i][g]))
                 if cut[i]:
                     relief += true
                     cut_h += pol.tier_weights[s.tier] * tod * s.consumers * (1 + pol.harm_beta * (run[i] - 1))
