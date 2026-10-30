@@ -1,5 +1,18 @@
 # Urja Niyam: Project Guide
 
+**A load-shedding decision-support system, built as a constraint optimization project for an Artificial Intelligence course.**
+
+| | |
+|---|---|
+| **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
+| **Last updated** | 26 October 2026 (version 0.7) |
+| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, their hybrid, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop, the scale sweep and the ladder statistics are built and run. 369 automated tests pass. The robustness and stability experiments are done, and the loop has optional meter feedback. A sensitivity run over the calibration ranges, an optional tighter bound, an optional explainer, the rest of the calibration and field validation remain. |
+| **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
+
+Sections marked **[LIVE]** change as results arrive.
+
+---
+
 ## In plain words
 
 **What are we doing?** When there is not enough electricity, someone has to choose which areas lose power for a while. Today that choice is mostly made by hand. We are building a helper that suggests the choice, checks that the suggestion follows every rule, and explains it. A person always makes the final call.
@@ -22,12 +35,13 @@
 4. **How close to the best possible?** At 10 feeders, where we can check, local search found the best plan every time. At bigger sizes we cannot prove it, but we can say its plan is at most 17-48% above the best possible.
 5. **Exact search runs out of steam at about 20 feeders**, even when it starts from a good plan. The hybrid never does worse than either solver alone and sometimes proves one more instance, but it does not move that wall.
 6. **The relaxation ladder** (the part that bends the rules when it must) never had to act for realistic shortfalls: up to 30% of demand every plan satisfied every rule. It starts to act at 40-50% of demand. What triggers it much more easily is constraints: if the operator forces 70% of the ordinary feeders to stay on, it acts even at a 20% shortfall, and halving the maximum downtime halves the shortfall it can absorb.
+7. **Robustness.** Protecting against wrong load numbers with a bigger safety margin works but is very expensive: at a 20% load error, a margin big enough to remove the shortfall multiplied the harm by about twelve. Letting the tool learn each feeder's real load from its meter gave the same protection at about a third of the harm, but only with accurate meters. Operator orders are also costly: forcing the cheapest feeder to stay on multiplied the harm by about four, because the cut moves to feeders with many consumers. And a failed breaker made plans noticeably more costly.
 
 **What does this change?**
 - Local search is the main solver for big grids. Exact search is for small grids and for proofs. CP-SAT stays a judge, used only up to about 50 feeders.
 - Our lower bound is the measuring stick at every size, because it is cheap (a couple of seconds even at 500 feeders).
 - The setup step used to take 22-33 seconds at 500 feeders and was repeated every cycle of the rolling-horizon loop. We rewrote it, and it now takes under a second. A 50-feeder loop episode runs at 1.5 seconds per cycle, so the stability and robustness experiments are now practical.
-- The ladder statistics are done. What remains is to run the robustness and stability experiments (the script exists) and, optionally, to try to tighten the bound.
+- The ladder statistics and the robustness experiments are done. What remains is to re-run the key results across the calibration ranges, and optionally to tighten the bound and add an explainer.
 
 ---
 
@@ -393,6 +407,8 @@ This is the standard idea of **receding-horizon (model-predictive) control**: pl
 
 The loop records what was actually suffered (harm, uncovered kW, switches) and three stability measures. All are about *plan thrashing*, a known problem in receding-horizon control. On **quiet** cycles (nothing changed in the world since the last cycle) it records the **plan-revision rate** (how much of the overlap with the previous plan the new plan changes) and the **commit-surprise rate** (how often the action we commit differs from what the previous plan predicted for this slot, which is what a dispatcher would experience as the plan flip-flopping). Over the whole episode it counts **unplanned reversals**: an unpredicted switch that undoes a switch made at most four slots earlier. An older count, **short cycles** (on-off-on within an hour), is kept but is not used as evidence, because rotating feeders at the 30-minute minimum duration produces it legitimately.
 
+**Optional meter feedback.** Real feeders have meters, and the load errors in our model are persistent per feeder, so the loop can learn them. After each slot it compares every feeder's measured load with its estimate and smooths a per-feeder multiplier toward the ratio. Later plans use the corrected loads. This replaces part of the safety margin: instead of insuring against an error, the tool measures it. It depends on meter quality, which the robustness results (8.8) show.
+
 ---
 
 ## 7. How we know the code is correct
@@ -546,7 +562,63 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - **Safety margin trade-off.** With 20% load-estimate error, a 5% margin left 273 kW-slots unserved while a 40% margin left none, at **2.5 times the harm** (16,880 versus 42,271) on one scenario. The margin is insurance with a measurable price.
 - **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way. Its value for local search at 50+ feeders is untested.
 
-### 8.8 What this means
+### 8.8 Robustness and stability experiments
+
+Three seeds per cell. Margin, override, failure and feedback runs use 10 feeders (exact solver) in a 16-slot crisis episode (20% shortfall); the stability runs use 20 feeders (local search) in the three data-derived tiers. The loop replans every slot, commits one, and simulates the actuation. Harm is what was actually suffered. Unserved is the shortfall not covered by real relief.
+
+**Safety margin against load-estimate error** (the load error is a persistent per-feeder bias; plans use estimates, so harm is the same at every error level):
+
+| Margin | Median harm | Harm vs 5% margin | Mean unserved (kW-slots) and episodes with any unserved: 10% error | 20% error | 30% error |
+|---|---|---|---|---|---|
+| 0% | 4,144 | 0% | 594 (1/3) | 1,736 (2/3) | 3,108 (2/3) |
+| 5% | 4,144 | 0% | 594 (1/3) | 1,769 (2/3) | 3,027 (2/3) |
+| 15% | 13,395 | +223% | 0 (0/3) | 822 (2/3) | 2,163 (2/3) |
+| 30% | 48,371 | +1,067% | 0 (0/3) | 0 (0/3) | 721 (3/3) |
+| 50% | 166,469 | +3,917% | 0 (0/3) | 0 (0/3) | 43 (2/3) |
+
+**Meter feedback instead of a big margin** (20% load error, 5% margin unless stated; our own run of the same script):
+
+| Variant | Median harm | Mean unserved (kW-slots) | Episodes with any unserved |
+|---|---|---|---|
+| No feedback, margin 5% | 4,144 | 1,701 | 2 of 3 |
+| No feedback, margin 30% | 48,371 | 0 | 0 of 3 |
+| Feedback, exact meter (alpha 0.7) | 17,080 | 0 | 0 of 3 |
+| Feedback, meter noise 10% (alpha 0.3) | 54,981 | 18 | 1 of 3 |
+
+**Stability on quiet cycles** (nothing changed in the world since the last cycle):
+
+| Tier | Warm start | Plan revision | Commit surprise | Unplanned reversals | Switches | Median harm |
+|---|---|---|---|---|---|---|
+| mild | on | 0.5% | 0.0% | 0.0 | 5.0 | 2,135 |
+| mild | off | 1.2% | 0.7% | 0.0 | 5.0 | 2,147 |
+| moderate | on | 0.8% | 0.0% | 0.0 | 5.0 | 2,237 |
+| moderate | off | 1.1% | 1.3% | 0.0 | 5.0 | 2,183 |
+| crisis | on | 1.8% | 0.0% | 0.3 | 8.7 | 6,498 |
+| crisis | off | 2.1% | 0.7% | 0.3 | 8.7 | 6,352 |
+
+**Operator overrides** (the same episode with and without; "keep k" forces the k most-cut feeders to stay on in slots 4-11, "cut k" forces k idle feeders to be cut in slots 4-7; k is capped by what the baseline actually did):
+
+| Override | Median extra harm | Median harm ratio | Unserved |
+|---|---|---|---|
+| keep 1 | 42,756 | 4.2x | 0 |
+| keep 2 | 424,128 | 64.7x | 0 |
+| keep 3 | 364,611 | 64.7x | 0 |
+| cut 1 | 132,722 | 5.7x | 0 |
+| cut 2 | 200,726 | 26.9x | 0 |
+
+**Breaker failures** (probability that a switching command fails):
+
+| Failure probability | Failed commands | Extra switches | Median harm | Mean unserved | Cycles at rung 1 or higher |
+|---|---|---|---|---|---|
+| 0% | 0.0 | 0.0 | 4,144 | 0 | 0.0 |
+| 5% | 0.0 | 0.0 | 4,144 | 0 | 0.0 |
+| 10% | 0.7 | 0.7 | 7,085 | 0 | 3.3 |
+| 20% | 1.0 | 2.0 | 16,952 | 191 | 3.3 |
+| 30% | 1.7 | 2.7 | 20,050 | 191 | 3.3 |
+
+One run took 98 minutes of wall time while all others took about 15 seconds. That is almost certainly the laptop sleeping and is not a solver effect (the row's mean solve time confirms it).
+
+### 8.9 What this means
 
 1. **Local search is the workhorse beyond about 20 feeders.** It found a plan at every size and matched the proven optimum at 10 feeders in all three tiers. At 50 feeders CP-SAT with 60 s is a little ahead (0-1% against 3-7% above the best plan found), and from 200 feeders up local search leads clearly.
 2. **CP-SAT has a practical limit.** At 200 feeders its plans are 28-61% worse than local search even with 60 s and a starting plan. We use it to grade grids up to about 50 feeders, and above that we grade against our own lower bound.
@@ -557,7 +629,13 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 7. **The ladder is insurance, not a daily feature.** Every realistic shortfall (up to 30% of demand; the data's 99.9th percentile is 32%) stayed at rung 0 at both sizes. The first relaxation appears at 40-50% of demand and escalation at 80-90%.
 8. **Constraints stress the ladder more than the size of the shortfall.** Forcing 70% of the non-critical feeders on triggers relaxation at only a 20% shortfall, and halving the maximum downtime (with fewer switches) moves the first relaxation from 40-50% down to 20-30%. Relaxation is mostly rung 1; Critical approvals are rare; and when the tool escalates it still covers 84-95% (ratio sweep) or 29-59% (override sweep) of the shortfall without cutting any Critical feeder.
 9. **Limits of these ladder numbers.** Above 12 feeders local search cannot prove that a strict plan does not exist, so rung 1 and 2 outcomes are labelled "not found" rather than "proven impossible", and the relaxation sizes are upper bounds (a better search might need less). Sizes are totals over feeders, not normalised per feeder.
-10. **Honest caveats.** Two instances per cell (four for the ladder) and one start time; synthetic grid; placeholder parameters; one machine. These results show where each method works and where it strains, not what a real grid would do.
+10. **A flat safety margin is lumpy, expensive insurance.** To remove all unserved shortfall, a 10% load error needed a 15% margin (+223% harm), 20% error needed 30% (+1,067%), and at 30% error even 50% margin left shortfall in two of three episodes. Raising the required relief by a few percent forces another, costly feeder to be cut, so the cost jumps instead of growing smoothly.
+11. **Learning from meters can replace most of the margin, if the meters are good.** With an exact meter, feedback removed the unserved shortfall at about a third of the big margin's median harm (17,080 against 48,371). With 10% meter noise the advantage disappeared. Meter quality, which the operators we have in mind describe as rough and late, decides whether to measure or to insure.
+12. **Warm start makes the committed actions predictable and costs nothing consistent.** The commit surprise was 0.0% in every tier with it, and 0.7-1.3% without. Plans changed very little either way (0.5-2.1% on quiet cycles) and there were almost no unplanned reversals, so there is no thrashing problem at 20 feeders. Harm differed by -0.6% to +2.5% with no consistent direction.
+13. **Operator overrides are expensive, and the tool should say so before they are applied.** Forcing the cheapest feeder to stay on multiplied harm by 4.2 times, and forcing two by 65 times, because the cut moves to feeders with many consumers. Coverage was never at risk. A preview of the extra harm would let the operator decide with the cost in view (9.2, step 2).
+14. **A failed breaker is costly.** At a 10% failure probability the median harm rose 71%, the ladder relaxed downtime in about three cycles, and shortfall went unserved at 20%. Each failed command forces the plan to compensate with other, more expensive feeders for a few slots.
+15. **A solver caveat.** Under heavy constraints our local search is not always optimal: in one episode forcing three feeders on gave lower harm than forcing two, which cannot happen with an optimal solver. The constrained cases are where a better search would matter most.
+16. **Honest caveats.** Two instances per cell (three or four for the experiments) and one start time; synthetic grid; placeholder parameters; one machine; small grids for the loop experiments. These results show where each method works and where it strains, not what a real grid would do.
 
 ---
 
@@ -580,21 +658,23 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 | 11 | **Hybrid solver** (local search, then branch-and-bound from its plan) | Done | The sweep showed the exact solver failing to improve on a weak starting plan in a crisis |
 | 12 | **Fast pattern setup** (cached rows, bulk arithmetic, cached dominance) | Done | Setup was the largest fixed cost (22-33 s at 500 feeders) and the loop repeats it every cycle |
 | 13 | **Ladder statistics** (three stress families, 20 and 50 feeders, 4 seeds) | Done | The third deliverable. Realistic shortfalls never needed it, so we stressed it with overrides and stricter rules |
-| 14 | Refined stability measures (commit surprise, unplanned reversals) and the **robustness experiment script** | Built; experiments still to be run | The old thrashing count also counted legitimate rotation, so it could not be used as evidence. The loop is now fast enough to run the experiments |
-| 15 | **First calibration pass** of the placeholders from public sources (`docs/field-constraints.md`) | Done; public sources only, no operator validation | Our results are only as credible as the parameters. The ladder results showed which ones matter most, so the search started with those |
-| 16 | This guide | Done, kept current | |
+| 14 | Refined stability measures and the **robustness experiments** (margin, stability, override, failure) | Done | The fourth deliverable. The old thrashing count also counted legitimate rotation, so it was replaced first |
+| 15 | Optional **meter feedback** in the loop | Done | The margin results showed that insuring against load error is expensive, and the errors in our model are persistent per feeder, so they can be learned |
+| 16 | **First calibration pass** of the placeholders from public sources (`docs/field-constraints.md`) | Done; public sources only, no operator validation | Our results are only as credible as the parameters. The ladder results showed which ones matter most, so the search started with those |
+| 17 | This guide | Done, kept current | |
 
 ### 9.2 What is planned, and why
 
 | # | Step | Why | Exit criterion |
 |---|---|---|---|
-| 1 | **Run the robustness and stability experiments** (`evaluation/run_robustness.py`) | The fourth deliverable. Four experiments: safety margin against load-estimate error, warm start against none (commit surprise and plan revision on quiet cycles), operator overrides (same episode with and without), breaker failure rate | A margin-versus-harm table, stability measures per tier, the cost of overrides, and the effect of failures; each stated with its caveats |
-| 2 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It is optional because the results are already informative and it comes after the experiments | A smaller window at 50-500 feeders, and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
-| 3 | **Finish calibration.** The first pass is done. Remaining: take numeric limits (maximum outage, interruptions) from one or two state regulations, run the **sensitivity experiments** the file recommends (restoration surge cap, promise share, maximum downtime, switching budget, a daytime farm block, loss-weighted harm), inspect the candidate feeder-load dataset, and get operator validation when access is possible | The first pass found that our restoration surge is probably low and that the numbers the ladder is most sensitive to (maximum downtime, switching budgets) have no public numeric source. So the report should show the results across a range, not at one value | Each key conclusion stated with the range of parameter values it holds for |
-| 4 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
-| 5 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
+| 1 | **Sensitivity run across the calibration ranges.** Re-run the ladder statistics and the loop experiments while varying one assumption at a time: restoration surge cap (30, 50, 100%), farm promise share (60, 75, 100%), maximum downtime (2, 3, 6 h), switching budget (2, 3, 6), a daytime farm block, and a loss-weighted harm policy | The calibration pass found the placeholders that matter most have no solid public number. The report should say which conclusions hold across the range, instead of resting on one value | A table showing, for each key conclusion, whether it holds across the range and where it changes |
+| 2 | **Operator what-if** (small, optional): show the extra harm of an override before it is applied | Overrides cost 4 to 65 times the baseline harm. The operator keeps the final say, but should see the price | A function that returns the plan with and without the override and the difference, plus a ladder message |
+| 3 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It comes after the experiments, which were the promised deliverables | A smaller window at 50-500 feeders and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
+| 4 | **Finish calibration**: numeric limits from state regulations, inspect the candidate feeder-load dataset, operator validation when possible | Our results are only as credible as the grid parameters | `docs/field-constraints.md` filled, each value sourced |
+| 5 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
+| 6 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
 
-**Why this order.** The tool improvements the sweep called for are done and the ladder is measured, so what remains of the promised deliverables is the robustness and stability study. The optional bound work comes after it, calibration after the experiments have shown which parameters matter, and the optional explainer last so it cannot delay the core.
+**Why this order.** The four promised deliverables are now measured. What is left makes them trustworthy (the sensitivity run, then calibration), adds the one feature the results asked for (the override preview), and then the optional extras, with the explainer last so it cannot delay the core.
 
 ### 9.3 Open questions
 
@@ -603,6 +683,9 @@ Measured on 6-feeder episodes. These show behaviour; they are not yet a systemat
 - The 2019-onward tier set is built but not compared with the all-years set.
 - Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
 - The fast setup is measured on our test machine only; re-measure on the team's laptop.
+- The meter feedback assumes every feeder's load is measured each slot. Real meters are late or rough, and the results show that 10% meter noise removes the benefit. How good are the real meters? This needs an operator.
+- A failed breaker is handled by replanning around it. A realistic tool might offer to retry the command or send a crew. Not modelled.
+- Under heavy constraints our local search is not always optimal (8.9, point 15). Is that worth a better search, or just a stated caveat?
 - A candidate source of real feeder loads and feeder categories (MSEDCL's weekly feeder-wise load PDFs) was found but not inspected. It must not be listed in `docs/data-sources.md` until its columns, units, resolution and licence are recorded.
 - Ladder follow-ups (optional): normalise relaxation sizes per feeder; certify rung failures above 12 feeders (a dual bound that proves a strict plan cannot exist would turn "not found" into "proven impossible").
 - The ladder stays at rung 0 for realistic shortfalls under our placeholder policy. Whether real downtime limits and switching budgets are tighter than ours is exactly what field validation should tell us.
@@ -684,3 +767,4 @@ python -m evaluation.run_robustness                                             
 | 25 Oct 2026 | 0.4 | Two-seed scale sweep, hybrid solver and fast pattern setup added (results, mechanics, tracker and plan updated); plain-words overview refreshed; thrashing-measure caveat recorded |
 | 26 Oct 2026 | 0.5 | Ladder statistics results added (three stress families); stability measures refined (commit surprise, unplanned reversals) and the robustness script described; tracker and plan updated |
 | 26 Oct 2026 | 0.6 | First calibration pass from public sources recorded (tracker, plan, placeholder section); candidate feeder-load dataset noted as not yet inspected |
+| 26 Oct 2026 | 0.7 | Robustness and stability results added (margin, feedback, stability, overrides, failures); optional meter feedback added to the loop; tracker and plan updated |
