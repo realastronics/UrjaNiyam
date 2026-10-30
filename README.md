@@ -13,7 +13,7 @@ src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid
                         bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch),
                         minconflicts.py (weighted min-conflicts local search, from scratch),
                         hybrid.py (local search first, then branch-and-bound started from its plan)
-src/loadshed/loop.py    rolling-horizon loop: ledger, operator events, actuation failures, load error, metrics
+src/loadshed/loop.py    rolling-horizon loop: ledger, operator events, actuation failures, load error, optional meter feedback, metrics
 src/loadshed/ladder.py  relaxation ladder: rung 0/1 plans, rung 2 approval proposals, rung 3 ESCALATE
 src/loadshed/verify.py  independent verifier (no solver code, plain loops)
 src/loadshed/sim/       synthetic grid (grid.py), shortfall scenarios (scenarios.py), Zenodo ratios (zenodo.py)
