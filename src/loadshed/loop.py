@@ -291,7 +291,7 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
             for s in specs:
                 i = s.id
                 true = est[i][g] * (1.0 + bias[i] + (rng.gauss(0.0, cfg.load_error[1]) if cfg.load_error[1] > 0 else 0.0))
-                if cfg.load_feedback is not None and est[i][g] > 0:          # the meter reading corrects the next plans
+                if cfg.load_feedback is not None and est[i][g] > 0 and not was_cut[i]:          # the meter reading corrects the next plans
                     alpha, msd = cfg.load_feedback
                     meas = true * (1.0 + (rng.gauss(0.0, msd) if msd > 0 else 0.0))
                     corr[i] = min(3.0, max(0.3, (1 - alpha) * corr[i] + alpha * meas / est[i][g]))
