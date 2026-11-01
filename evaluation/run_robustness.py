@@ -102,7 +102,7 @@ def jobs(a, pol):
         elif exp == "override":
             for seed in range(a.seeds):
                 yield exp, "none", 0, a.n, seed, lambda seed=seed: build_cfg(pol, a.n, seed, a.ratio, None, a.episode_slots, a.time_limit)
-                for mode, k in [("keep", 1), ("keep", 2), ("keep", 3), ("cut", 1), ("cut", 2)]:
+                for mode, k in [("keep", 1), ("keep", 2), ("cut", 1), ("cut", 2)]:
                     yield exp, mode, k, a.n, seed, "OVERRIDE"
 
 
@@ -157,7 +157,7 @@ def summarize(rows):
         print("(k is capped by how many feeders the baseline actually cut or left idle; harm ratio = harm with / harm without)")
         print(f"{'override':>10} {'eps':>3} | {'median extra harm':>17} {'median harm ratio':>17} | {'mean unserved kW-slots':>22}")
         base = {int(r["seed"]): r for r in ex("override") if r["param1"] == "none"}
-        for mode, k in [("keep", 1), ("keep", 2), ("keep", 3), ("cut", 1), ("cut", 2)]:
+        for mode, k in [("keep", 1), ("keep", 2), ("cut", 1), ("cut", 2)]:
             g = [r for r in ex("override") if r["param1"] == mode and int(float(r["param2"])) == k and int(r["seed"]) in base]
             if g:
                 extra = [r["harm"] - base[int(r["seed"])]["harm"] for r in g]

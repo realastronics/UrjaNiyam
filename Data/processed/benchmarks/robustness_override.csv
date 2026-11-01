@@ -1,0 +1,4 @@
+experiment,param1,param2,n,seed,harm,unserved,overshoot,switches,failed,replans,relaxed_cycles,escalations,quiet_cycles,plan_revision_quiet,surprise_quiet,surprises,unplanned_reversals,mean_solve_s,wall_s
+override,none,0,10,0,53522.4,0.0,6118.1,11,0,16,0,0,15,0.01688888888888889,0.013333333333333334,2,0,1.06,16.9
+override,keep,1,10,0,168023.0,0.0,8914.9,12,0,16,0,0,13,0.02923076923076923,0.03076923076923077,6,0,1.01,16.2
+override,keep,2,10,0,546541.2,0.0,14790.3,17,0,16,0,0,13,0.018461538461538463,0.05384615384615385,7,3,0.86,13.8
