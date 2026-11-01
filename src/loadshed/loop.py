@@ -199,7 +199,7 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
             Feeder(s.id, s.tier, s.ftype, s.consumers, tuple(x * corr[s.id] for x in est[s.id][k:k + H]),
                    _promises(s, pol, cfg.start_slot + k)) for s in specs)
         eb = max(-0.9, rng.gauss(0.0, cfg.shortfall_error)) if cfg.shortfall_error > 0 else 0.0
-        S = tuple(round(shortfall(g, ratio_at(k)) * (1 + (eb if g > k else 0.0)), 1) for g in range(k, k + H))
+        S = tuple(round(shortfall(g, ratio_at(k)) * (1 + eb), 1) for g in range(k, k + H))
         forced_cut, forced_keep = set(), set()
         for o in overrides:
             for g in range(max(o.start, k), min(o.end, k + H)):
