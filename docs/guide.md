@@ -706,6 +706,23 @@ An earlier version of this test kept the slot being committed exact. It showed n
 16. **Wrong shortfall forecasts cost harm and leave shortfall, and a bigger margin helps only a little.** With the planner seeing a shortfall off by a random 20%, mean harm rose from 50k to 87k (+73%) with the 5% margin and shortfall was left in 3 of 10 episodes. At 40% error: 110k and 6 of 10. Raising the margin to 15% cut unserved shortfall only slightly (96 to 91 at 20%, 567 to 382 at 40%) while adding 15-35% harm. The error here is new each cycle and the next replan can correct it. A persistent bias would be worse and is not tested.
 17. **Honest caveats.** Ten seeds for the robustness experiments (three for stability, four for the ladder, two for the scale sweep); one start time; synthetic grid; placeholder parameters; one machine; small grids (10-20 feeders) for the loop experiments; a one-second budget per attempt. These results show where each method works and where it strains, not what a real grid would do.
 
+### 8.10 Sensitivity of the ladder to the placeholder policy
+
+One assumption changed at a time, 50 feeders, 17:00, 4 seeds per cell, 20 / 30 / 40% shortfall. Cells show the share of instances still at rung 0 (all rules hold). Baseline matches the ratio sweep in 8.6.
+
+| Policy variant | 20% | 30% | 40% |
+|---|---|---|---|
+| Baseline (3 h max downtime, 3 switches, surge cap 30%) | 100% | 100% | 25% |
+| Max downtime 2 h | 100% | 50% | 0% |
+| Max downtime 1 h | 0% | 0% | 0% |
+| 2 switches per feeder per shift | 100% | 75% | 0% |
+| 2 h and 2 switches | 100% | 50% | 0% |
+| Heavy surge (30% base, +5% per slot, cap 100%) | 100% | 100% | 25% |
+
+A first run at 20 feeders (6 shortfall levels) agreed: a 2 h limit moved the first relaxation from 50% to 40% of demand, a 6 h limit kept rung 0 up to 60%, and the surge cap rows were identical to the baseline. Those surge-cap rows were uninformative, because with a 3 h limit the surge never reaches the cap. The farm-promise share (60%, 100%) changed nothing, but at one start time and about three farm feeders per grid that test has little power.
+
+What it means: the maximum downtime decides whether the ladder is ever needed. It stays idle for realistic shortfalls (up to 30%) only if the real limit is about 3 h or looser. The switching budget matters less, and the restoration surge did not matter in this range. Both limits have no public source (`docs/field_constraints.md`), so they are the first questions for an operator.
+
 ---
 
 ## 9. Progress tracker and plan [LIVE]
