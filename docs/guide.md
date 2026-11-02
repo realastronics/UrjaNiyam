@@ -5,8 +5,8 @@
 | | |
 |---|---|
 | **What this file is** | The one place that explains *what* we are building, *why* each decision was made, and *how* each algorithm works. |
-| **Last updated** | 26 October 2026 (version 0.7) |
-| **State of the project** | Model, verifier, simulator, two baselines, an exact solver, a local-search solver, their hybrid, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop, the scale sweep and the ladder statistics are built and run. 369 automated tests pass. The robustness and stability experiments are done, and the loop has optional meter feedback. A sensitivity run over the calibration ranges, an optional tighter bound, an optional explainer, the rest of the calibration and field validation remain. |
+| **Last updated** | 2 November 2026 (version 0.8) |
+| **State of the project** | Built and run: the model, the verifier, the simulator, two baselines, an exact solver, a local-search solver, their hybrid, a CP-SAT answer key, the relaxation ladder, the rolling-horizon loop, the scale sweep, the ladder statistics, the robustness experiments (re-run with 10 seeds), the forecast-error test and the operator what-if tool. 370 automated tests (369 before the what-if test was added; the full suite has not been re-run since the latest changes). Still to do: a sensitivity run over the calibration ranges, re-running the stability and ladder experiments with more seeds, an optional tighter bound, an optional explainer, the rest of the calibration, and field validation. |
 | **Honesty rule** | Every number here comes from something we built and ran. Assumptions and placeholders are labelled as such. Nothing is claimed about the real Indian grid that we have not marked "needs validation". |
 
 Sections marked **[LIVE]** change as results arrive.
@@ -35,13 +35,20 @@ Sections marked **[LIVE]** change as results arrive.
 4. **How close to the best possible?** At 10 feeders, where we can check, local search found the best plan every time. At bigger sizes we cannot prove it, but we can say its plan is at most 17-48% above the best possible.
 5. **Exact search runs out of steam at about 20 feeders**, even when it starts from a good plan. The hybrid never does worse than either solver alone and sometimes proves one more instance, but it does not move that wall.
 6. **The relaxation ladder** (the part that bends the rules when it must) never had to act for realistic shortfalls: up to 30% of demand every plan satisfied every rule. It starts to act at 40-50% of demand. What triggers it much more easily is constraints: if the operator forces 70% of the ordinary feeders to stay on, it acts even at a 20% shortfall, and halving the maximum downtime halves the shortfall it can absorb.
-7. **Robustness.** Protecting against wrong load numbers with a bigger safety margin works but is very expensive: at a 20% load error, a margin big enough to remove the shortfall multiplied the harm by about twelve. Letting the tool learn each feeder's real load from its meter gave the same protection at about a third of the harm, but only with accurate meters. Operator orders are also costly: forcing the cheapest feeder to stay on multiplied the harm by about four, because the cut moves to feeders with many consumers. And a failed breaker made plans noticeably more costly.
+7. **Robustness (re-run with 10 seeds, version 0.8).** The first run used 3 seeds and several of its headline numbers were wrong. The corrected picture:
+   - **A bigger safety margin is expensive and only partly protective.** At a 20% load error, a 15% margin raised the median harm by 65% and a 30% margin by 166%, and shortfall was still left in 3 and 2 episodes out of 10.
+   - **Learning loads from meters beats a big margin, but only with good meters.** With exact meters the harm was about half that of the 30% margin (mean 61k against 124k) with a similar shortfall. With 10% meter noise most of the advantage disappears. The first version of this test let the tool read meters of switched-off feeders, which a real tool cannot do. We fixed that.
+   - **Operator orders are costly.** Forcing one feeder to stay on multiplied the median harm by 4.7, forcing two by 11.1. Forcing a cut of one idle feeder by 5.4, two by 8.9. Individual cases ranged from 1.9 to 240 times.
+   - **Failed breakers leave shortfall unserved.** The mean unserved shortfall rose from 0 to 236, 486 and 617 kW-slots at failure chances of 10%, 20% and 30%. Harm itself is erratic here and is not a good summary.
+   - **Wrong shortfall forecasts hurt in two ways.** With a 20% forecast error, harm rose by 73% and shortfall was left unserved in 3 of 10 episodes. At 40% error, 6 of 10. A bigger margin helps only a little.
+8. **A caution on harm numbers in the loop.** Each replan gets only about one second per solve. On hard instances that is not enough to find the best plan, and harm can be 15-30% higher than a longer search finds. So the loop's harm numbers are upper bounds, and we rest our conclusions on unserved shortfall and on paired comparisons of the same seed.
 
 **What does this change?**
 - Local search is the main solver for big grids. Exact search is for small grids and for proofs. CP-SAT stays a judge, used only up to about 50 feeders.
 - Our lower bound is the measuring stick at every size, because it is cheap (a couple of seconds even at 500 feeders).
-- The setup step used to take 22-33 seconds at 500 feeders and was repeated every cycle of the rolling-horizon loop. We rewrote it, and it now takes under a second. A 50-feeder loop episode runs at 1.5 seconds per cycle, so the stability and robustness experiments are now practical.
-- The ladder statistics and the robustness experiments are done. What remains is to re-run the key results across the calibration ranges, and optionally to tighten the bound and add an explainer.
+- The setup step used to take 22-33 seconds at 500 feeders and was repeated every cycle of the rolling-horizon loop. We rewrote it, and it now takes under a second.
+- Because operator orders are so costly, we built an **operator what-if** tool: it shows the extra harm of an order before the order is applied.
+- What remains: re-run key results across the calibration ranges, re-run the stability and ladder experiments with more seeds, and optionally tighten the bound and add an explainer.
 
 ---
 
@@ -64,7 +71,7 @@ The person in the control room has to decide *which feeders to cut, in what orde
 | Emergency under-frequency shedding | seconds | No. Automatic relays do this. |
 | Network physics (line flows, voltage) | milliseconds to seconds | No. We do not model the network. |
 
-**Why this layer.** Forecasting asks "how short will we be?". Nobody has to *decide* anything from a forecast until the shortfall is known. The decision step is the harder half, it can be formulated precisely, and it is exactly where constraint-solving techniques apply. Staying out of forecasting also keeps this a search-and-optimization project rather than a machine-learning one.
+**Why this layer.** Forecasting asks "how short will we be?". Nobody has to *decide* anything from a forecast until the shortfall is known. The decision step is the harder half, it can be formulated precisely, and it is exactly where constraint-solving techniques apply. Staying out of forecasting also keeps this a search-and-optimization project rather than a machine-learning one. (We do test what happens when the shortfall we are given is *wrong*, see 8.8.)
 
 ### 1.3 Who the tool is for
 
@@ -72,7 +79,7 @@ The **dispatcher** (control-room engineer) is the primary user, because the disp
 
 ### 1.4 What real-world practice forces into the model
 
-> **Source note.** This is general background plus public material. We could not reach grid staff, so every item is listed in `docs/field-constraints.md` as "needs validation by an operator". Treat these as plausible, not confirmed.
+> **Source note.** This is general background plus public material. We could not reach grid staff, so every item is listed in `docs/field_constraints.md` as "needs validation by an operator". Treat these as plausible, not confirmed.
 
 | Real-world fact | How the model handles it | Why |
 |---|---|---|
@@ -83,7 +90,7 @@ The **dispatcher** (control-room engineer) is the primary user, because the disp
 | Breakers cannot flip every 15 minutes; staff do few operations per shift | **Minimum cut/restore durations** and **switching budgets** | The plan must be executable |
 | Meter readings are rough or late | A **safety margin** on the shortfall | Insurance against estimate error (its price is measured in section 8) |
 | Hospitals sit on feeders shared with thousands of homes | A feeder is tagged with its **highest tier** | Protection is a property of the whole feeder |
-| Operators override plans for reasons the tool cannot see | **Force-cut and force-keep** are inputs; the tool replans around them | The human always has the last word |
+| Operators override plans for reasons the tool cannot see | **Force-cut and force-keep** are inputs; the tool replans around them, and the **what-if tool** shows what an override will cost | The human always has the last word, and should see the price |
 | Some discoms cut high-loss feeders more | We do not decide this. Tier and harm weights are **policy inputs** | It is a value judgment, not a computation |
 
 ---
@@ -205,13 +212,13 @@ shortfall ratio = unmet MW / (met MW + unmet MW)      on days with unmet demand
 |---|---|---|---|---|---|---|---|---|
 | Ratio | 0.46% | 1.09% | 2.96% | 6.84% | 15.5% | 20.0% | 23.1% | 31.6% |
 
-**Our tiers use percentiles 50, 75 and 95: mild 3.0%, moderate 6.8%, crisis 20.0%** of demand unserved. The first plan (50/90/99) was dropped because P90 and P99 sit close together (the upper tail is J&K's normal level), which would have made two near-identical tiers. A 2019-onward version (`tiers_2019.json`) exists; **its comparison is not yet analysed**.
+**Our tiers use percentiles 50, 75 and 95: mild 3.0%, moderate 6.8%, crisis 20.0%** of demand unserved. The first plan (50/90/99) was dropped because P90 and P99 sit close together (the upper tail is J&K's normal level), which would have made two near-identical tiers. A 2019-onward version (`tiers_2019.json`) exists (mild 1.8%, moderate 5.5%, crisis 20.0%); **its comparison is not yet analysed**.
 
 **Shape inside a day.** The data is daily, so it cannot say how a shortfall rises and falls. We use a documented synthetic **trapezoid** (ramp up over 4 slots, hold, ramp down), so `S(t) = ratio x shape(t) x demand(t)`. This is an assumption, not a data result.
 
 ### 3.4 The synthetic grid
 
-`make_grid(n, seed)` builds feeders: 5% Critical, 15% Flexible, 80% Normal; types and sizes by tier; hourly load shapes (evening peak for homes, flat for industry, supply blocks of 06-14, 14-22 or 22-06 for farms with a 75% promise). The same seed gives the same grid. All numbers are placeholders to be calibrated from tariff orders (`docs/field-constraints.md`).
+`make_grid(n, seed)` builds feeders: 5% Critical, 15% Flexible, 80% Normal; types and sizes by tier; hourly load shapes (evening peak for homes, flat for industry, supply blocks of 06-14, 14-22 or 22-06 for farms with a 75% promise). The same seed gives the same grid. All numbers are placeholders to be calibrated from tariff orders (`docs/field_constraints.md`).
 
 ---
 
@@ -226,6 +233,7 @@ flowchart TD
     LAD["RELAXATION LADDER<br/>rungs 0 to 3"]
     SOL["SOLVERS<br/>greedy | branch-and-bound | local search"]
     VER["INDEPENDENT VERIFIER"]
+    WI["WHAT-IF<br/>price of an override before it is applied"]
     ACT["ACTUATION (simulated)<br/>commands can fail"]
     OR["CP-SAT ORACLE<br/>offline answer key"]
     OP --> CP
@@ -235,6 +243,8 @@ flowchart TD
     LAD --> SOL
     SOL --> VER
     VER --> OP
+    OP -.-> WI
+    WI -.-> OP
     OP --> ACT
     ACT --> LD
     OR -.-> SOL
@@ -256,10 +266,14 @@ src/loadshed/model.py        data types      policy.py  loads and validates the 
 src/loadshed/verify.py       the independent verifier
 src/loadshed/metrics.py      the harm objective and reporting numbers
 src/loadshed/sim/            grid generator, scenarios, Zenodo ratios
-src/loadshed/solvers/        greedy.py  patterns.py  bnb.py  minconflicts.py
+src/loadshed/solvers/        greedy.py  patterns.py  bnb.py  minconflicts.py  hybrid.py
 src/loadshed/ladder.py       the relaxation ladder
 src/loadshed/loop.py         the rolling-horizon loop
-evaluation/                  oracle_cpsat.py (CP-SAT, offline only), run_gap.py (benchmark)
+src/loadshed/whatif.py       the operator what-if (price of an override)
+evaluation/                  oracle_cpsat.py (CP-SAT, offline only), run_gap.py, run_scale.py, run_hybrid.py,
+                             run_ladder_stats.py, run_robustness.py, run_forecast.py (forecast-error test),
+                             analyze_robustness.py (per-seed view of a robustness CSV),
+                             check_determinism.py, check_budget.py (solver-noise checks), plot_scale.py
 scripts/  tests/  notebooks/  data/  docs/  literature/
 ```
 
@@ -330,7 +344,9 @@ Only two things connect feeders: the per-slot relief sums and the system switchi
 
 Each pattern carries its cost, its **net relief** per slot (relief minus restoration surge) and its switch events. The total objective becomes **the sum of the chosen patterns' costs plus a constant**: the problem is *separable*, which makes bounds easy. We also discard **dominated** patterns (no cheaper and no better in any slot than another).
 
-**Why.** The search space is no longer 2^800 raw bits but a choice among a few hundred valid rows per feeder, with every single-feeder rule already satisfied. A test checks that, on random problems, the enumeration contains **exactly** the rows the verifier accepts. **Speed.** Our first builder took about 0.03-0.06 s per feeder (12-33 s at 500 feeders), which mattered because the rolling-horizon loop repeats it every cycle. The fast builder uses three observations. The valid rows depend only on a feeder's history, overrides, promises and tier, not on its load, consumers or weights, so each distinct situation is enumerated once and cached (also across loop cycles). Cost and net relief then follow by array arithmetic. And whether pattern *i* dominates *j* depends only on the structure of the rows (and on which slots carry load), so that yes/no matrix is cached too: after sorting by cost, a pattern is dominated exactly when some cheaper one dominates it. Result: identical patterns, 0.7 s at 500 feeders instead of 12 s. The simple builder is kept as a reference, and the tests demand that the two agree.
+**Why.** The search space is no longer 2^800 raw bits but a choice among a few hundred valid rows per feeder, with every single-feeder rule already satisfied. A test checks that, on random problems, the enumeration contains **exactly** the rows the verifier accepts.
+
+**Speed.** Our first builder took about 0.03-0.06 s per feeder (12-33 s at 500 feeders), which mattered because the rolling-horizon loop repeats it every cycle. The fast builder uses three observations. The valid rows depend only on a feeder's history, overrides, promises and tier, not on its load, consumers or weights, so each distinct situation is enumerated once and cached (also across loop cycles). Cost and net relief then follow by array arithmetic. And whether pattern *i* dominates *j* depends only on the structure of the rows (and on which slots carry load), so that yes/no matrix is cached too: after sorting by cost, a pattern is dominated exactly when some cheaper one dominates it. Result: identical patterns, 0.7 s at 500 feeders instead of 12 s. The simple builder is kept as a reference, and the tests demand that the two agree.
 
 ### 6.4 Branch-and-bound with bounds propagation
 
@@ -395,11 +411,13 @@ The ladder tries rung 0, then 1, then 2, then 3, each with the same solver chain
 - **Rung 2** reruns with every Critical (feeder, slot) allowed, then lists the ones actually used. The result is deliberately **not executable**: the verifier rejects it for a missing approval until the operator approves. Approval is a function call that adds those pairs to the problem.
 - **Rung 3** finds the largest fraction of the shortfall the allowed actions can cover, by **bisection** over a scaling factor, and reports the uncovered kW per slot. Covering the same fraction in every slot is simple to explain but not the best possible, which is an open point (section 9.3).
 
+**A time note.** A ladder call splits its time limit into twelve parts, so with the loop's default of 12 seconds each attempt gets about **one second**. That is enough for easy instances. On hard instances it is not (see 8.8, point 15).
+
 ### 6.8 The rolling-horizon loop
 
 This is the standard idea of **receding-horizon (model-predictive) control**: plan ahead, act on the first step, observe, replan. A single plan is never right for long, because shortfalls change, loads are estimates, and breakers fail. Each cycle:
 
-1. **Build the problem** from the *ledger* (what feeders actually did), the shortfall the operator currently states, estimated loads, overrides and earlier approvals.
+1. **Build the problem** from the *ledger* (what feeders actually did), the shortfall the operator currently states, estimated loads, overrides and earlier approvals. The stated shortfall can be given a random error (`shortfall_error`, see below).
 2. **Solve it through the ladder**, warm-started with last cycle's plan shifted forward.
 3. If the ladder proposes Critical cuts, **ask the operator** (a callback; the simulation can approve, decline or do something smarter).
 4. **Commit only the first slot** and send commands. Each may fail. Real loads differ from estimates by a per-feeder bias plus noise.
@@ -407,19 +425,32 @@ This is the standard idea of **receding-horizon (model-predictive) control**: pl
 
 The loop records what was actually suffered (harm, uncovered kW, switches) and three stability measures. All are about *plan thrashing*, a known problem in receding-horizon control. On **quiet** cycles (nothing changed in the world since the last cycle) it records the **plan-revision rate** (how much of the overlap with the previous plan the new plan changes) and the **commit-surprise rate** (how often the action we commit differs from what the previous plan predicted for this slot, which is what a dispatcher would experience as the plan flip-flopping). Over the whole episode it counts **unplanned reversals**: an unpredicted switch that undoes a switch made at most four slots earlier. An older count, **short cycles** (on-off-on within an hour), is kept but is not used as evidence, because rotating feeders at the 30-minute minimum duration produces it legitimately.
 
-**Optional meter feedback.** Real feeders have meters, and the load errors in our model are persistent per feeder, so the loop can learn them. After each slot it compares every feeder's measured load with its estimate and smooths a per-feeder multiplier toward the ratio. Later plans use the corrected loads. This replaces part of the safety margin: instead of insuring against an error, the tool measures it. It depends on meter quality, which the robustness results (8.8) show.
+**Two kinds of wrong input can be switched on:**
+- **Load error** (`load_error`): the real load of each feeder differs from the estimate by a fixed per-feeder bias plus per-slot noise. The planner never sees this error.
+- **Shortfall error** (`shortfall_error`): in each cycle the planner sees the shortfall, for the whole horizon including the slot it is about to commit, multiplied by one random factor (a normal draw, never below minus 90%). The real shortfall stays exact. The draw is new every cycle, so errors are *not* persistent over time. A persistent forecast bias would be harder and is not yet tested.
+
+**Optional meter feedback.** Real feeders have meters, and the load errors in our model are persistent per feeder, so the loop can learn them. After each slot it compares a feeder's measured load with its estimate and smooths a per-feeder multiplier toward the ratio. Later plans use the corrected loads. This replaces part of the safety margin: instead of insuring against an error, the tool measures it.
+
+**What the meter can and cannot see.** A switched-off feeder reads zero, so a real tool cannot measure its load. In version 0.7 our loop did read the load of switched-off feeders, which made feedback look better than it is. Since version 0.8 the loop learns about a feeder **only in slots where it was on before the slot's commands**. That includes the slot in which it is cut (the dispatcher sees the load drop when the breaker opens). If a plan cuts a feeder from the very first slot, we learn nothing about it. One test (`test_a_bigger_safety_margin_...`) caught this: with strict metering, feedback gave exactly the same unserved shortfall as no feedback in that scenario, until we allowed the reading in the slot of the cut.
+
+### 6.9 The operator what-if
+
+`what_if(problem, keep=..., cut=...)` in `src/loadshed/whatif.py` runs the ladder twice: once on the problem as it is, once with the override added. It returns both plans and the **extra harm** (second objective minus first). The operator can see the price of an override before applying it. It does not block anything: the human keeps the last word.
+
+Two limits, deliberately not handled yet. It does not warn if either side needed a relaxed rung. And on hard instances the one-second-per-attempt budget makes the harm of each plan noisy (see 8.8, point 15), so a small difference should not be trusted. A test checks that forcing the cheapest feeder to stay on costs extra harm and that the plan obeys the order.
 
 ---
 
 ## 7. How we know the code is correct
 
-For a safety tool, "it ran" is not evidence. Five checks, each guarding against a different kind of mistake:
+For a safety tool, "it ran" is not evidence. Six checks, each guarding against a different kind of mistake:
 
 1. **Hand-computed tests.** The harm of a small plan is worked out on paper and the test demands that exact value.
 2. **The verifier as referee, and a reference implementation.** Pattern enumeration must equal *exactly* the rows the verifier accepts, over every possible row of random single feeders, in both strict and relaxed modes. The fast pattern builder must in turn equal the simple reference builder on random grids with histories, overrides and approvals, with a cold and a warm cache.
 3. **Brute force.** On tiny problems we enumerate every possible schedule, keep those the verifier accepts, and take the cheapest. The oracle and the branch-and-bound must match it exactly, including infeasible cases, relaxed cases and operator overrides. They matched on every random problem tried.
 4. **Whole-episode verification.** What the loop *actually executed* across all its replans must pass the verifier as **one plan over the whole episode**. That proves minimum durations, switching budgets and shift resets held *between* cycles, not just inside each plan.
 5. **Mutation testing.** We deliberately break the code (ignore a rule, drop the surge, inflate the bound, record a failed command as successful, skip the shift reset) and confirm that tests **fail**. A test that cannot fail proves nothing. This exposed two weak tests, which we rewrote.
+6. **Replication and per-seed checks (new in 0.8).** A result from three seeds, or a median alone, is not a result. Before trusting a number we (a) run the same configuration again to see how much it moves (`check_determinism.py`, `check_budget.py`), (b) look at each seed separately and at the mean as well as the median (`analyze_robustness.py`), and (c) compare conditions on the *same* seeds.
 
 **Bugs these checks found:**
 
@@ -431,6 +462,11 @@ For a safety tool, "it ran" is not evidence. Five checks, each guarding against 
 | Verifier blamed the plan for an outage already over the limit in its history | Random brute-force comparison |
 | First Lagrangian bound far too weak; its fix was **invalid** (above the optimum) | Comparing bounds to known optima |
 | Local search could not find a plan when its penalty weights started tiny | Random comparison against the oracle |
+| Meter feedback read the meters of switched-off feeders (too optimistic) | Reading the loop code while checking a feedback claim; a test then showed the honest version needs the reading in the slot of the cut |
+| "Feedback gives a third of the harm" came from the median of 3 seeds; the means were equal | Per-seed table (`analyze_robustness.py`) |
+| "A 10% breaker failure raises harm by 71%" came from one episode; another seed's rise had no failure in it | Per-seed table, paired with the 0% run |
+| The first forecast-error test could never show unserved shortfall, because the slot being committed was always exact | Reading an all-zero column critically |
+| `keep 3` in the override test equalled `keep 2` on most seeds (k is capped by what the baseline cut) | Reading the per-seed rows |
 
 ---
 
@@ -460,7 +496,7 @@ Branch-and-bound returned the oracle's optimum wherever it finished. Local searc
 | Moderate | 0/4 | 97% and 178% | 87% | **4.6%** | 46% |
 | Crisis | 0/4 | 100% and 138% | 4.4% | **2.8%** | 45% |
 
-The "between" interval uses the best solution anyone found (the gap is at least this) and the best proven lower bound (the gap is at most this), so the true gap lies inside it. 
+The "between" interval uses the best solution anyone found (the gap is at least this) and the best proven lower bound (the gap is at most this), so the true gap lies inside it.
 
 ### 8.3 The scale sweep, 10 to 500 feeders (2 seeds per case)
 
@@ -513,7 +549,7 @@ On our own test machine an earlier run with two seeds showed more: 2 of 6 proofs
 
 - **Setup:** 2.4 s to 0.15 s at 100 feeders (16 times faster) and about 12 s to 0.7 s at 500 feeders on our test machine, with **identical patterns**. We have not yet re-measured it on the team's laptop.
 - **The loop at 50 feeders** (12 slots, one replan per slot, local search): the episode runs in 18 s, which is 1.5 s per cycle. A first look at warm-starting (one episode, so indicative only): plan revision in quiet cycles 0.1% with warm start against 1.7% without, switches 13 against 15, harm 1,060 against 1,066.
-- **Thrashing measures.** The first measure, "short cycles", also counted legitimate rotation (5 and 6 in those episodes), so it was replaced by commit surprise and unplanned reversals (6.8). In a first quiet 16-slot episode with 6 feeders, 6.7% of feeder-cycles were surprises and there were no unplanned reversals, while short cycles counted 2. The experiments in 9.2 use the new measures.
+- **Thrashing measures.** The first measure, "short cycles", also counted legitimate rotation (5 and 6 in those episodes), so it was replaced by commit surprise and unplanned reversals (6.8). In a first quiet 16-slot episode with 6 feeders, 6.7% of feeder-cycles were surprises and there were no unplanned reversals, while short cycles counted 2. The stability experiment in 8.8 uses the new measures.
 
 ### 8.6 The relaxation ladder under stress
 
@@ -550,42 +586,90 @@ Four instances per case (seeds 0-3, 17:00), 20 and 50 feeders, 24 s per ladder c
 | 80% | 0 / 100 / 0 / 0 | 0 / 25 / 0 / 75 | 119 / 257 |
 | 90% | 0 / 0 / 25 / 75 | 0 / 0 / 0 / 100 | ESCALATE covers 95% / 84% |
 
-A ladder call took about 1.5 s at rung 0, 3.5 s at rung 1, and 17-26 s when it reached rung 3 (seven solves for the best-effort search).
+A ladder call took about 1.5 s at rung 0, 3.5 s at rung 1, and 17-26 s when it reached rung 3 (seven solves for the best-effort search). These runs use 4 seeds and have not been repeated with more.
 
-### 8.7 The rolling-horizon loop
+### 8.7 The rolling-horizon loop (first look)
 
-Measured on 6-feeder episodes. These show behaviour; they are not yet a systematic study.
+Measured on 6-feeder episodes. These show behaviour; they are not a systematic study. The systematic studies are in 8.8.
 
 - **Executed history passes the verifier as a single plan**, including with breaker failures, operator overrides, a mid-episode shortfall change and short shifts that force rotation.
 - **A failed command is seen and compensated.** The shortfall is unserved in that slot, and the next plan covers it. The failed attempt costs a switching operation.
 - **Critical feeders are cut only after approval.** Declining leads to ESCALATE with the shortfall unserved.
-- **Safety margin trade-off.** With 20% load-estimate error, a 5% margin left 273 kW-slots unserved while a 40% margin left none, at **2.5 times the harm** (16,880 versus 42,271) on one scenario. The margin is insurance with a measurable price.
-- **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way. Its value for local search at 50+ feeders is untested.
+- **Plan stability.** In quiet cycles the new plan changed only 4.7% (moderate) and 0.9% (crisis) of the entries it overlapped with the old plan. **Warm-starting made no measurable difference at this size**, because the exact solver finds the same optimum either way.
 
 ### 8.8 Robustness and stability experiments
 
-Three seeds per cell. Margin, override, failure and feedback runs use 10 feeders (exact solver) in a 16-slot crisis episode (20% shortfall); the stability runs use 20 feeders (local search) in the three data-derived tiers. The loop replans every slot, commits one, and simulates the actuation. Harm is what was actually suffered. Unserved is the shortfall not covered by real relief.
+**What was run.** Margin, feedback and failure experiments: **10 seeds per cell**, 10 feeders, a 16-slot crisis episode (20% shortfall), run in one session (`robustness_v2.csv`). Override experiment: 10 seeds, same setup (`robustness_override.csv`). Forecast-error test: 10 seeds (`run_forecast.py`). Stability: 3 seeds, 20 feeders, not re-run. Each episode replans every slot, commits one, and simulates the actuation. **Harm** is what was actually suffered. **Unserved** is the shortfall not covered by real relief. At 10 feeders the loop calls the hybrid solver, but with only about one second per attempt it is **not exact on hard instances** (see point 15).
 
-**Safety margin against load-estimate error** (the load error is a persistent per-feeder bias; plans use estimates, so harm is the same at every error level):
+**Safety margin against load-estimate error** (the load error is a persistent per-feeder bias; plans use the estimates, so harm is the same at every error level):
 
-| Margin | Median harm | Harm vs 5% margin | Mean unserved (kW-slots) and episodes with any unserved: 10% error | 20% error | 30% error |
+| Load error | Margin | Median harm | Harm vs 5% margin | Mean unserved (kW-slots) | Episodes with any unserved |
 |---|---|---|---|---|---|
-| 0% | 4,144 | 0% | 594 (1/3) | 1,736 (2/3) | 3,108 (2/3) |
-| 5% | 4,144 | 0% | 594 (1/3) | 1,769 (2/3) | 3,027 (2/3) |
-| 15% | 13,395 | +223% | 0 (0/3) | 822 (2/3) | 2,163 (2/3) |
-| 30% | 48,371 | +1,067% | 0 (0/3) | 0 (0/3) | 721 (3/3) |
-| 50% | 166,469 | +3,917% | 0 (0/3) | 0 (0/3) | 43 (2/3) |
+| 10% | 5% | 40,691 | 0% | 178 | 1/10 |
+| 10% | 15% | 67,247 | +65% | 0 | 0/10 |
+| 10% | 30% | 101,498 | +149% | 0 | 0/10 |
+| 20% | 5% | 40,691 | 0% | 523 | 5/10 |
+| 20% | 15% | 67,247 | +65% | 247 | 3/10 |
+| 20% | 30% | 108,256 | +166% | 10 | 2/10 |
+| 30% | 5% | 40,691 | 0% | 1,016 | 6/10 |
+| 30% | 15% | 65,348 | +61% | 703 | 3/10 |
+| 30% | 30% | 109,940 | +170% | 262 | 4/10 |
 
-**Meter feedback instead of a big margin** (20% load error, 5% margin unless stated; our own run of the same script):
+**Meter feedback instead of a big margin** (5% margin unless stated; the meter is read only while a feeder is on, plus the slot it is cut, see 6.8):
 
-| Variant | Median harm | Mean unserved (kW-slots) | Episodes with any unserved |
+| Load error | Variant | Median harm | Mean unserved (kW-slots) | Episodes with any unserved |
+|---|---|---|---|---|
+| 10% | No feedback, margin 5% | 40,691 | 178 | 1/10 |
+| 10% | No feedback, margin 30% | 109,940 | 0 | 0/10 |
+| 10% | Feedback, exact meter (alpha 0.7) | 37,752 | 0 | 0/10 |
+| 10% | Feedback, meter noise 10% (alpha 0.3) | 40,682 | 0 | 0/10 |
+| 20% | No feedback, margin 5% | 40,691 | 527 | 5/10 |
+| 20% | No feedback, margin 30% | 109,940 | 5 | 2/10 |
+| 20% | Feedback, exact meter | 34,387 | 8 | 1/10 |
+| 20% | Feedback, meter noise 10% | 45,726 | 213 | 3/10 |
+| 30% | No feedback, margin 5% | 40,691 | 1,016 | 6/10 |
+| 30% | No feedback, margin 30% | 108,256 | 266 | 5/10 |
+| 30% | Feedback, exact meter | 48,347 | 201 | 3/10 |
+| 30% | Feedback, meter noise 10% | 49,029 | 235 | 4/10 |
+
+At 20% error the **mean** harm was 61k for the exact-meter feedback and 124k for the 30% margin. Feedback was cheaper in 9 of the 10 paired seeds.
+
+**Operator overrides** (the same episode with and without; "keep k" forces the k most-cut feeders to stay on in slots 4-11, "cut k" forces k idle feeders to be cut in slots 4-7; k is capped by what the baseline actually did):
+
+| Override | Median extra harm | Median harm ratio | Mean unserved (kW-slots) |
 |---|---|---|---|
-| No feedback, margin 5% | 4,144 | 1,701 | 2 of 3 |
-| No feedback, margin 30% | 48,371 | 0 | 0 of 3 |
-| Feedback, exact meter (alpha 0.7) | 17,080 | 0 | 0 of 3 |
-| Feedback, meter noise 10% (alpha 0.3) | 54,981 | 18 | 1 of 3 |
+| keep 1 | 126,476 | 4.7x | 0 |
+| keep 2 | 387,742 | 11.1x | 14 |
+| cut 1 | 93,052 | 5.4x | 0 |
+| cut 2 | 229,530 | 8.9x | 0 |
 
-**Stability on quiet cycles** (nothing changed in the world since the last cycle):
+Single cases ranged from 1.9x to 240x (large when the baseline was cheap). Only one of 40 episodes left shortfall unserved (keep 2, seed 3, 141 kW-slots). The old `keep 3` row was removed: it equalled `keep 2` whenever the baseline cut only two feeders.
+
+**Breaker failures** (probability that a switching command fails):
+
+| Failure probability | Failed commands | Extra switches | Median harm | Mean harm | Mean unserved (kW-slots) | Relaxed cycles | Escalations |
+|---|---|---|---|---|---|---|---|
+| 0% | 0.0 | 0.0 | 40,691 | 56.9k | 0 | 0.0 | 0.0 |
+| 10% | 1.1 | 0.6 | 33,776 | 59.2k | 236 | 1.3 | 0.0 |
+| 20% | 1.8 | 1.3 | 29,097 | 45.1k | 486 | 1.0 | 0.0 |
+| 30% | 3.5 | 3.4 | 40,447 | 202k | 617 | 2.6 | 0.0 |
+
+Harm does not rise steadily with the failure rate: it is dominated by a few seeds (at 30%, seed 4 went from 84k to 776k and seed 7 from 289k to 952k). Unserved shortfall rises steadily.
+
+**Wrong shortfall forecasts** (the planner sees the shortfall times a random factor, new each cycle; margin as shown; the real shortfall is exact; 20% shortfall, 10 feeders, 10 seeds):
+
+| Forecast error (sd) | Margin | Mean harm | Mean unserved (kW-slots) | Episodes with any unserved |
+|---|---|---|---|---|
+| 0% | 5% | 50,162 | 0 | 0/10 |
+| 0% | 15% | 74,903 | 0 | 0/10 |
+| 20% | 5% | 86,854 | 96 | 3/10 |
+| 20% | 15% | 101,194 | 91 | 4/10 |
+| 40% | 5% | 110,301 | 567 | 6/10 |
+| 40% | 15% | 120,542 | 382 | 6/10 |
+
+An earlier version of this test kept the slot being committed exact. It showed no unserved shortfall at all (0 in every row) and harm rose only moderately: that was a flaw in the test, because the loop commits just one slot per cycle and that slot was always right. It is not evidence that forecast error is harmless.
+
+**Stability on quiet cycles** (nothing changed in the world since the last cycle; 3 seeds, 20 feeders, local search, not re-run):
 
 | Tier | Warm start | Plan revision | Commit surprise | Unplanned reversals | Switches | Median harm |
 |---|---|---|---|---|---|---|
@@ -596,27 +680,11 @@ Three seeds per cell. Margin, override, failure and feedback runs use 10 feeders
 | crisis | on | 1.8% | 0.0% | 0.3 | 8.7 | 6,498 |
 | crisis | off | 2.1% | 0.7% | 0.3 | 8.7 | 6,352 |
 
-**Operator overrides** (the same episode with and without; "keep k" forces the k most-cut feeders to stay on in slots 4-11, "cut k" forces k idle feeders to be cut in slots 4-7; k is capped by what the baseline actually did):
-
-| Override | Median extra harm | Median harm ratio | Unserved |
-|---|---|---|---|
-| keep 1 | 42,756 | 4.2x | 0 |
-| keep 2 | 424,128 | 64.7x | 0 |
-| keep 3 | 364,611 | 64.7x | 0 |
-| cut 1 | 132,722 | 5.7x | 0 |
-| cut 2 | 200,726 | 26.9x | 0 |
-
-**Breaker failures** (probability that a switching command fails):
-
-| Failure probability | Failed commands | Extra switches | Median harm | Mean unserved | Cycles at rung 1 or higher |
-|---|---|---|---|---|---|
-| 0% | 0.0 | 0.0 | 4,144 | 0 | 0.0 |
-| 5% | 0.0 | 0.0 | 4,144 | 0 | 0.0 |
-| 10% | 0.7 | 0.7 | 7,085 | 0 | 3.3 |
-| 20% | 1.0 | 2.0 | 16,952 | 191 | 3.3 |
-| 30% | 1.7 | 2.7 | 20,050 | 191 | 3.3 |
-
-One run took 98 minutes of wall time while all others took about 15 seconds. That is almost certainly the laptop sleeping and is not a solver effect (the row's mean solve time confirms it).
+**Solver noise checks.**
+- Running the same episode six times in one session (`check_determinism.py`) gave the identical result every time (harm 53,522, 11 switches).
+- Across runs on different days, or if the laptop slows down, hard instances drift: seed 0 gave 46,681 in one run and 53,522 in another for the same configuration.
+- A larger budget per replan changes hard instances (`check_budget.py`, time limit 12 / 48 / 144 s): seed 7 harm 288,935 / 221,094 / 221,094; seed 4 harm 84,218 / 84,218 / 70,445.
+- One feedback episode took 10,806 s of wall time because the laptop slept. Its result matched the other feedback rows for that seed, so we kept it.
 
 ### 8.9 What this means
 
@@ -625,16 +693,18 @@ One run took 98 minutes of wall time while all others took about 15 seconds. Tha
 3. **Exact search is for small grids and for proofs, and it runs out at about 20 feeders.** The hybrid removes the weak starting plan as a reason, and the wall stays. What is left is the bound itself: in tight (crisis) cases the root bound is weak.
 4. **The cheap lower bound is the measuring stick at every size.** It costs 0.4-1.7 seconds at 200-500 feeders. The window does not grow steadily with size (16-34% at 50 feeders, 17-48% at 200, 25-34% at 500), so we cannot certify a local-search plan tighter than that, but we can always say how far it could be from the best possible.
 5. **How much optimizing helps depends on the scenario.** In mild and moderate shortfalls there are many ways to cover the need, and the simple rule wastes 59-140% at 50-500 feeders. In a crisis at 200-500 feeders almost everything has to be cut and there is less choice, so the simple rule is 8-29% worse.
-6. **Setup used to be the largest fixed cost and no longer is.** The loop can now run 50+ feeders at about a second and a half per cycle, which makes the robustness and stability experiments practical.
+6. **Setup used to be the largest fixed cost and no longer is.** The loop can now run 50+ feeders at about a second and a half per cycle.
 7. **The ladder is insurance, not a daily feature.** Every realistic shortfall (up to 30% of demand; the data's 99.9th percentile is 32%) stayed at rung 0 at both sizes. The first relaxation appears at 40-50% of demand and escalation at 80-90%.
 8. **Constraints stress the ladder more than the size of the shortfall.** Forcing 70% of the non-critical feeders on triggers relaxation at only a 20% shortfall, and halving the maximum downtime (with fewer switches) moves the first relaxation from 40-50% down to 20-30%. Relaxation is mostly rung 1; Critical approvals are rare; and when the tool escalates it still covers 84-95% (ratio sweep) or 29-59% (override sweep) of the shortfall without cutting any Critical feeder.
 9. **Limits of these ladder numbers.** Above 12 feeders local search cannot prove that a strict plan does not exist, so rung 1 and 2 outcomes are labelled "not found" rather than "proven impossible", and the relaxation sizes are upper bounds (a better search might need less). Sizes are totals over feeders, not normalised per feeder.
-10. A flat safety margin is costly, lumpy and only partial insurance. Over 10 seeds at 20% load error, margins of 15% and 30% raised median harm by 65% and 166% over the 5% margin. They still left shortfall in 3/10 and 2/10 episodes (5/10 at 5%). At 30% error, a 30% margin left shortfall in 4/10 episodes.
-11. Meter feedback beats a fat margin, but only with good meters and under a stated assumption. The loop sees a feeder’s real load only while it is on, plus once in the slot it is cut. At 20% error, exact meters gave mean harm 61k against 124k for the 30% margin, were cheaper in 9 of 10 paired seeds, and left a similar shortfall (8 against 5 kW-slots). With 10% meter noise the shortfall rose to 213 kW-slots (3/10 episodes) and the harm advantage mostly disappeared. An earlier version let the loop read meters of cut feeders. That was unrealistic and overstated the benefit, so we removed it.
-12. Operator overrides are expensive, and the tool should say so before they are applied. Over 10 seeds the median harm ratio was 4.7x (keep 1), 11.1x (keep 2), 5.4x (cut 1) and 8.9x (cut 2), ranging from 1.9x to 240x depending on how cheap the baseline was. Coverage failed in 1 of 40 episodes (141 kW-slots).
-13. A breaker failure shows up as unserved shortfall. Mean unserved shortfall rose from 0 to 236, 486 and 617 kW-slots at failure probabilities of 10%, 20% and 30%, with 1.1, 1.8 and 3.5 failed commands per episode. Harm is not a reliable summary here: it is heavy-tailed and not monotone, with single seeds jumping 5-10x at p=30%.
-15. Solver budget caveat. Each replan gets about 1 s per solve. On hard seeds, harm at this budget can be 15-30% above what a longer search finds (seed 7: 288,935 at the default budget against 221,094 at 4x; seed 4: 84,218 against 70,445 at 12x). Harm numbers for the loop are therefore upper bounds on hard instances, and the conclusions rest on unserved shortfall and paired per-seed comparisons. The stability and ladder experiments were not re-run with 10 seeds.
-16. **Honest caveats.** Two instances per cell (three or four for the experiments) and one start time; synthetic grid; placeholder parameters; one machine; small grids for the loop experiments. These results show where each method works and where it strains, not what a real grid would do.
+10. **A flat safety margin is costly, lumpy and only partial insurance.** At 20% load error a 15% margin raised the median harm by 65% and a 30% margin by 166%, yet shortfall was still left in 3 and 2 of 10 episodes (5 of 10 with the 5% margin). At 30% error even a 30% margin left shortfall in 4 of 10. (Version 0.7 reported +223% and +1,067% from three seeds. Those figures were too high.)
+11. **Learning from meters beats a big margin, but only with good meters and under a stated assumption.** At 20% load error, exact-meter feedback had a mean harm of 61k against 124k for the 30% margin (cheaper in 9 of 10 paired seeds) with a similar small shortfall (8 against 5 kW-slots). With 10% meter noise the shortfall rose to 213 kW-slots (3 of 10 episodes) and most of the advantage went. The assumption: the loop sees a feeder's load only while it is on, plus the slot of the cut. If a plan cuts a feeder before the loop ever sees it, feedback cannot learn about it. (Version 0.7 let the loop read switched-off feeders and overstated the gain, and its "one third of the harm" came from a median over three seeds.)
+12. **Warm start makes the committed actions predictable and costs nothing consistent.** The commit surprise was 0.0% in every tier with it, and 0.7-1.3% without. Plans changed very little either way (0.5-2.1% on quiet cycles) and there were almost no unplanned reversals, so there is no thrashing problem at 20 feeders. Harm differed by -0.6% to +2.5% with no consistent direction. This used 3 seeds and has not been repeated.
+13. **Operator overrides are expensive, and the tool says so before they are applied.** Over 10 seeds the median harm ratio was 4.7x (keep 1), 11.1x (keep 2), 5.4x (cut 1) and 8.9x (cut 2), from 1.9x to 240x depending on how cheap the baseline was. The cut moves to feeders with many consumers. Coverage failed in 1 of 40 episodes. The what-if tool (6.9) shows this price before an order is applied.
+14. **A failed breaker shows up as unserved shortfall.** The mean unserved shortfall went 0, 236, 486, 617 kW-slots at failure chances of 0%, 10%, 20%, 30%, with 1.1, 1.8 and 3.5 failed commands per episode. Harm is not a good summary: it is heavy-tailed and not steady (mean 57k, 59k, 45k, 202k). (Version 0.7 reported "+71% harm at 10%" from three seeds. That came from one episode, and another seed's rise had no failure in it at all.)
+15. **A solver caveat that limits every harm number from the loop.** Each replan gives each attempt about one second. On hard instances that is not enough: seed 7 harm was 288,935 at the default and 221,094 with four times the budget (24% lower); seed 4 was 84,218 and 70,445 with twelve times the budget (16% lower). So harm numbers from the loop are upper bounds on hard instances. Our conclusions lean on unserved shortfall and on comparing the same seeds. The same effect probably explains why forcing more feeders sometimes gave lower harm than forcing fewer in 8.8 (a better solver cannot do that). This replaces the older note that blamed local search.
+16. **Wrong shortfall forecasts cost harm and leave shortfall, and a bigger margin helps only a little.** With the planner seeing a shortfall off by a random 20%, mean harm rose from 50k to 87k (+73%) with the 5% margin and shortfall was left in 3 of 10 episodes. At 40% error: 110k and 6 of 10. Raising the margin to 15% cut unserved shortfall only slightly (96 to 91 at 20%, 567 to 382 at 40%) while adding 15-35% harm. The error here is new each cycle and the next replan can correct it. A persistent bias would be worse and is not tested.
+17. **Honest caveats.** Ten seeds for the robustness experiments (three for stability, four for the ladder, two for the scale sweep); one start time; synthetic grid; placeholder parameters; one machine; small grids (10-20 feeders) for the loop experiments; a one-second budget per attempt. These results show where each method works and where it strains, not what a real grid would do.
 
 ---
 
@@ -657,23 +727,26 @@ One run took 98 minutes of wall time while all others took about 15 seconds. Tha
 | 11 | **Hybrid solver** (local search, then branch-and-bound from its plan) | Done | The sweep showed the exact solver failing to improve on a weak starting plan in a crisis |
 | 12 | **Fast pattern setup** (cached rows, bulk arithmetic, cached dominance) | Done | Setup was the largest fixed cost (22-33 s at 500 feeders) and the loop repeats it every cycle |
 | 13 | **Ladder statistics** (three stress families, 20 and 50 feeders, 4 seeds) | Done | The third deliverable. Realistic shortfalls never needed it, so we stressed it with overrides and stricter rules |
-| 14 | Refined stability measures and the **robustness experiments** (margin, stability, override, failure) | Done | The fourth deliverable. The old thrashing count also counted legitimate rotation, so it was replaced first |
-| 15 | Optional **meter feedback** in the loop | Done | The margin results showed that insuring against load error is expensive, and the errors in our model are persistent per feeder, so they can be learned |
-| 16 | **First calibration pass** of the placeholders from public sources (`docs/field-constraints.md`) | Done; public sources only, no operator validation | Our results are only as credible as the parameters. The ladder results showed which ones matter most, so the search started with those |
+| 14 | Refined stability measures and the **robustness experiments** (margin, stability, override, failure) | Done, then redone (step 18) | The fourth deliverable. The old thrashing count also counted legitimate rotation, so it was replaced first |
+| 15 | Optional **meter feedback** in the loop | Done, corrected in step 18 | The margin results showed that insuring against load error is expensive, and the errors in our model are persistent per feeder, so they can be learned |
+| 16 | **First calibration pass** of the placeholders from public sources (`docs/field_constraints.md`) | Done; public sources only, no operator validation | Our results are only as credible as the parameters. The ladder results showed which ones matter most, so the search started with those |
 | 17 | This guide | Done, kept current | |
+| 18 | **Robustness re-run with 10 seeds**, meter feedback corrected to read only energised feeders, per-seed analysis and solver-noise checks | Done (v0.8) | A review of the raw CSV showed that several headline numbers came from 3 seeds, medians or single episodes. We could not build on them |
+| 19 | **Forecast-error test** (planner sees a wrong shortfall) | Done (v0.8) | The proposal promised a test with changing shortfall inputs, and until now the planner knew the shortfall exactly. The first version of the test was flawed and was fixed |
+| 20 | **Operator what-if** (`whatif.py`): the price of an override before it is applied | Done (v0.8) | Overrides cost 5-11 times the baseline harm (8.8), and the operator should see that price |
 
 ### 9.2 What is planned, and why
 
 | # | Step | Why | Exit criterion |
 |---|---|---|---|
 | 1 | **Sensitivity run across the calibration ranges.** Re-run the ladder statistics and the loop experiments while varying one assumption at a time: restoration surge cap (30, 50, 100%), farm promise share (60, 75, 100%), maximum downtime (2, 3, 6 h), switching budget (2, 3, 6), a daytime farm block, and a loss-weighted harm policy | The calibration pass found the placeholders that matter most have no solid public number. The report should say which conclusions hold across the range, instead of resting on one value | A table showing, for each key conclusion, whether it holds across the range and where it changes |
-| 2 | **Operator what-if** (small, optional): show the extra harm of an override before it is applied | Overrides cost 4 to 65 times the baseline harm. The operator keeps the final say, but should see the price | A function that returns the plan with and without the override and the difference, plus a ladder message |
-| 3 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak. It comes after the experiments, which were the promised deliverables | A smaller window at 50-500 feeders and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
-| 4 | **Finish calibration**: numeric limits from state regulations, inspect the candidate feeder-load dataset, operator validation when possible | Our results are only as credible as the grid parameters | `docs/field-constraints.md` filled, each value sourced |
+| 2 | **Re-run the stability and ladder experiments with more seeds** (10 each), in one session | They still rest on 3 and 4 seeds, which is the same weakness that sank the first robustness numbers | Per-seed tables, mean and median, same format as 8.8 |
+| 3 | **Tighter lower bound** (optional, time-boxed) | The window is 16-48% at 50+ feeders, so we cannot certify a plan more tightly, and the crisis bound is weak | A smaller window at 50-500 feeders and a test that the bound never exceeds a known optimum. If it fails, the report states the window honestly |
+| 4 | **Finish calibration**: numeric limits from state regulations, inspect the candidate feeder-load dataset, operator validation when possible | Our results are only as credible as the grid parameters | `docs/field_constraints.md` filled, each value sourced |
 | 5 | **Optional explainer**: reason codes and the cost of the best alternative | The project must not be a black box. The solver computes the explanation; an LLM, if used, only rewrites it | Every explanation traceable to a logged reason |
 | 6 | **Report, demo, viva preparation** | Everything above feeds it | Repo runs clean from a fresh clone |
 
-**Why this order.** The four promised deliverables are now measured. What is left makes them trustworthy (the sensitivity run, then calibration), adds the one feature the results asked for (the override preview), and then the optional extras, with the explainer last so it cannot delay the core.
+**Why this order.** The four promised deliverables are measured and, after step 18, their numbers have been checked per seed. What is left makes them trustworthy across assumptions (the sensitivity run, then more seeds on the older experiments, then calibration), and then the optional extras, with the explainer last so it cannot delay the core.
 
 ### 9.3 Open questions
 
@@ -682,9 +755,12 @@ One run took 98 minutes of wall time while all others took about 15 seconds. Tha
 - The 2019-onward tier set is built but not compared with the all-years set.
 - Two papers in `Literature/` still need summaries and a note on how they relate to our approach.
 - The fast setup is measured on our test machine only; re-measure on the team's laptop.
-- The meter feedback assumes every feeder's load is measured each slot. Real meters are late or rough, and the results show that 10% meter noise removes the benefit. How good are the real meters? This needs an operator.
+- The meter feedback assumes the loop sees a feeder's load while it is on and in the slot it is cut. Real meters are late or rough, and 10% meter noise removes most of the benefit. How good are the real meters? This needs an operator. (The CEA metering report in `docs/field_constraints.md` is a place to start.)
+- Shortfall forecast error is tested only as a fresh random draw each cycle. A persistent bias (the forecast is wrong in the same direction for hours) is not tested.
+- The one-second budget per attempt makes harm numbers from the loop noisy on hard instances (8.9, point 15). Options: a larger budget (about four times the cost) or iteration limits instead of clock limits. We chose to state the caveat and rely on unserved shortfall and paired comparisons.
+- A flat safety margin on the shortfall is a blunt tool. A cheaper alternative may be to derate each feeder's load by its own uncertainty, or to treat the sum of independent errors as smaller than their total. Untested.
 - A failed breaker is handled by replanning around it. A realistic tool might offer to retry the command or send a crew. Not modelled.
-- Under heavy constraints our local search is not always optimal (8.9, point 15). Is that worth a better search, or just a stated caveat?
+- The what-if tool does not yet warn when a plan on either side needed a relaxed rung, or when the solver budget makes the difference noisy.
 - A candidate source of real feeder loads and feeder categories (MSEDCL's weekly feeder-wise load PDFs) was found but not inspected. It must not be listed in `docs/data-sources.md` until its columns, units, resolution and licence are recorded.
 - Ladder follow-ups (optional): normalise relaxation sizes per feeder; certify rung failures above 12 feeders (a dual bound that proves a strict plan cannot exist would turn "not found" into "proven impossible").
 - The ladder stays at rung 0 for realistic shortfalls under our placeholder policy. Whether real downtime limits and switching budgets are tighter than ours is exactly what field validation should tell us.
@@ -708,13 +784,13 @@ One run took 98 minutes of wall time while all others took about 15 seconds. Tha
 | Time-of-day weights | night 1.3, day 1.0, evening peak 1.5 |
 | Feeder mix | 5% Critical, 15% Flexible, 80% Normal |
 | Farm promise | at least 75% of supply-block slots on |
-| Loop | a failed command costs one operation; load error is Gaussian (per-feeder bias plus per-slot noise) |
+| Loop | a failed command costs one operation; load error is Gaussian (per-feeder bias plus per-slot noise); shortfall error is one Gaussian factor per cycle; meter feedback sees a feeder only while it is on and in the slot it is cut; each replan gives each solver attempt about one second |
 
-**Evidence check on the placeholders.** `docs/field-constraints.md` compares them with public sources. In short: consumers per feeder and 8-hour farm blocks are consistent with the sources; the 75% farm promise is plausible but rests on one episode; the restoration surge cap (30%) is probably low for hot evenings; and maximum downtime, minimum durations and switching budgets have no public numeric source, which is why section 8.6 shows that they matter and why they need operator input.
+**Evidence check on the placeholders.** `docs/field_constraints.md` compares them with public sources. In short: consumers per feeder and 8-hour farm blocks are consistent with the sources; the 75% farm promise is plausible but rests on one episode; the restoration surge cap (30%) is probably low for hot evenings; and maximum downtime, minimum durations and switching budgets have no public numeric source, which is why section 8.6 shows that they matter and why they need operator input.
 
 **What we do not claim.** We do not predict shortfalls. We do not guarantee fairness across days or weeks. We do not model the network or under-frequency shedding. We do not claim new algorithms. We do not claim any result about the real grid: the feeders are synthetic and the field constraints are not yet validated by operators.
 
-**Known limits.** Exact search does not reach hundreds of feeders. Harm weights are value judgments left to the operator. Real load estimates are rougher than our Gaussian model. The scale sweep, systematic robustness study and field validation are not done yet. The Zenodo ratio distribution is dominated by a few small chronic states.
+**Known limits.** Exact search does not reach hundreds of feeders. Harm weights are value judgments left to the operator. Real load estimates are rougher than our Gaussian model. Harm numbers from the loop are upper bounds on hard instances. The stability and ladder experiments use few seeds. Field validation is not done. The Zenodo ratio distribution is dominated by a few small chronic states.
 
 ---
 
@@ -733,16 +809,16 @@ One run took 98 minutes of wall time while all others took about 15 seconds. Tha
 | Local search | Weighted min-conflicts, breakout weights, tabu list, strategic oscillation |
 | Optimization, soft constraints | Weighted CSP, harm objective, the relaxation ladder |
 | Knowledge representation | Tiers, types, rules and costs as data in a policy file |
-| Planning and replanning under uncertainty | Receding-horizon loop with a ledger and actuation failures |
-| Explainable and trustworthy AI | Independent verifier, human override, ladder transparency, planned reason codes |
-| Evaluation | Optimality gaps against an oracle, lower bounds, brute-force and mutation testing |
+| Planning and replanning under uncertainty | Receding-horizon loop with a ledger, actuation failures, load error and shortfall error |
+| Explainable and trustworthy AI | Independent verifier, human override, the what-if price of an override, ladder transparency, planned reason codes |
+| Evaluation | Optimality gaps against an oracle, lower bounds, brute-force and mutation testing, per-seed replication |
 | Machine learning (deliberately at the edge) | Forecasting is an input, not our contribution; reinforcement learning is a possible later comparison |
 
-**Run everything** (from the repository root):
+**Run everything** (from the repository root; run scripts as modules with `python -m`, not with the editor's play button, or Python cannot find the `evaluation` package). For long runs, plug in the laptop, turn off sleep and close other programs, and do not run the tests at the same time. Do not mix rows from different runs in one table.
 
 ```powershell
 pip install -e ".[dev,data,oracle]"
-pytest                                            # expect 369 passed (a few minutes in total)
+pytest                                            # all tests should pass (370 after the what-if test was added; full suite not yet re-run)
 python scripts/build_scenario_tiers.py --percentiles 50 75 95
 python -m evaluation.run_gap --sizes 10 --seeds 3 --hours 10 17
 python -m evaluation.run_gap --sizes 50 --seeds 2 --hours 10 17 --bnb-time 60 --out data/processed/benchmarks/gap_50.csv
@@ -751,7 +827,12 @@ python -m evaluation.run_scale --seeds 1 --ls-time 20 --bnb-time 30 --oracle-tim
 python -m evaluation.run_scale --seeds 2 --resume                                         # longer sweep, about 40 min; resumable
 python -m evaluation.plot_scale                                                           # figures from the sweep CSV
 python -m evaluation.run_ladder_stats --seeds 4 --time-limit 24                           # ladder under stress (about 30 min)
-python -m evaluation.run_robustness                                                       # margin, stability, override, failure (about 25 min)
+python -m evaluation.run_robustness --experiments margin failure feedback --seeds 10 --margins 0.05 0.15 0.30 --failure-probs 0.0 0.10 0.20 0.30 --out data/processed/benchmarks/robustness_v2.csv   # about 70 min
+python -m evaluation.run_robustness --experiments override --seeds 10 --out data/processed/benchmarks/robustness_override.csv                                                                    # about 14 min
+python -m evaluation.run_forecast                                                         # forecast-error test, about 16 min
+python -m evaluation.analyze_robustness                                                   # per-seed view (edit the CSV path inside the file)
+python -m evaluation.check_determinism                                                    # same episode 6 times, about 2 min
+python -m evaluation.check_budget                                                         # solver budget 12 / 48 / 144 s on seeds 7 and 4, about 10 min
 ```
 
 ---
@@ -767,3 +848,4 @@ python -m evaluation.run_robustness                                             
 | 26 Oct 2026 | 0.5 | Ladder statistics results added (three stress families); stability measures refined (commit surprise, unplanned reversals) and the robustness script described; tracker and plan updated |
 | 26 Oct 2026 | 0.6 | First calibration pass from public sources recorded (tracker, plan, placeholder section); candidate feeder-load dataset noted as not yet inspected |
 | 26 Oct 2026 | 0.7 | Robustness and stability results added (margin, feedback, stability, overrides, failures); optional meter feedback added to the loop; tracker and plan updated |
+| 2 Nov 2026 | 0.8 | Robustness re-run with 10 seeds after a per-seed review of the 0.7 numbers: margin, feedback, override and failure claims revised; meter feedback corrected to read only energised feeders (plus the slot of the cut) and its test changed; shortfall-error option added to the loop and a forecast-error test run; operator what-if added (`whatif.py` plus a test); solver-noise checks added (`check_determinism.py`, `check_budget.py`) and the one-second-per-attempt caveat recorded; per-seed analysis script added; guide rewritten in simpler language; tracker, plan, open questions and run commands updated |
