@@ -25,7 +25,7 @@ import random
 from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Callable
-
+from itertools import groupby
 from .ladder import ESCALATE, NEEDS_APPROVAL, LadderResult, solve_ladder, with_approvals
 from .model import LONG_AGO, Feeder, FeederHistory, Problem, Schedule, Tier
 from .policy import Policy
@@ -47,20 +47,16 @@ class Override:
     feeder_id: str
     action: str                  # "cut" or "keep"
 
-
 @dataclass(frozen=True)
 class ActuationFailure:
     slot: int
     feeder_id: str               # the command to this feeder at this slot fails (the breaker does not move)
 
-
 def approve_all(result: LadderResult, problem: Problem, k: int):
     return frozenset(result.needs_approval)
 
-
 def decline_all(result: LadderResult, problem: Problem, k: int):
     return None
-
 
 @dataclass(frozen=True)
 class EpisodeConfig:
@@ -81,7 +77,6 @@ class EpisodeConfig:
     load_feedback: tuple[float, float] | None = None   # (smoothing alpha, meter noise sd as a fraction); None = no meter feedback
     shortfall_error: float = 0.0                       # sd of the planner's error on FUTURE shortfall slots (fraction)
 
-
 @dataclass(frozen=True)
 class StepLog:
     slot: int
@@ -98,7 +93,6 @@ class StepLog:
     approvals_requested: int
     approvals_granted: int
     surprises: int = 0               # feeders whose committed action differs from what the previous cycle's plan predicted
-
 
 @dataclass(frozen=True)
 class EpisodeMetrics:
@@ -330,18 +324,11 @@ def run_episode(cfg: EpisodeConfig) -> EpisodeResult:
     rows = {i: tuple(r) for i, r in executed.items()}
     cut_counts = [sum(r) for r in rows.values()]
     longest = short = 0
-    for r in rows.values():
-        runs, cur, val = [], 0, None
-        for x in r:
-            if x == val:
-                cur += 1
-            else:
-                if val is not None:
-                    runs.append((val, cur))
-                val, cur = x, 1
-        runs.append((val, cur))
-        longest = max([longest] + [n for v, n in runs if v == 1])
-        short += sum(1 for m in range(1, len(runs) - 1) if runs[m][1] <= 4)
+    for row in rows.values():
+        runs = [(value, sum(1 for _ in group))
+            for value, group in groupby(row)]
+        longest = max(longest,max((length for value, length in runs if value == 1), default=0,),)
+        short += sum(length <= 4 for _, length in runs[1:-1])
     crit = {s.id for s in specs if s.tier == Tier.CRITICAL}
     quiet_steps = [s for s in steps if s.quiet and s.plan_revision is not None]
     solves = [s.solve_s for s in steps if s.solve_s > 0]

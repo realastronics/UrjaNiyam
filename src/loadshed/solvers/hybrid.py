@@ -13,7 +13,7 @@ Every plan returned has passed verify().
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 from ..model import Problem, Schedule
@@ -40,13 +40,11 @@ def solve_hybrid(problem: Problem, time_limit_s: float = 30.0, ls_share: float =
                  force_relaxed: bool = False, node_limit: int | None = None) -> HybridResult:
     """time_limit_s is the SEARCH budget per mode (local search + branch-and-bound); pattern setup is separate."""
     t0 = perf_counter()
-    r = _phase(problem, not force_relaxed, time_limit_s, ls_share, seed, warm_start, node_limit)
-    if r.status == "INFEASIBLE" and relax_downtime_if_infeasible and not force_relaxed:
-        r2 = _phase(problem, False, time_limit_s, ls_share, seed, warm_start, node_limit)
-        r = HybridResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes,
-                         r2.ls_objective, 0.0, r.setup_s + r2.setup_s)
-    return HybridResult(r.schedule, r.status, r.mode, r.objective, r.lower_bound, r.nodes, r.ls_objective,
-                        perf_counter() - t0, r.setup_s)
+    r = _phase(problem, not force_relaxed, time_limit_s, ls_share, seed, warm_start, node_limit,)
+    if (r.status == "INFEASIBLE" and relax_downtime_if_infeasible and not force_relaxed):
+        r2 = _phase(problem, False, time_limit_s, ls_share, seed, warm_start, node_limit,)
+        r = replace(r2, nodes=r.nodes + r2.nodes, setup_s=r.setup_s + r2.setup_s,)
+    return replace(r, runtime_s=perf_counter() - t0)
 
 
 def _phase(problem: Problem, strict: bool, budget: float, ls_share: float, seed: int,
