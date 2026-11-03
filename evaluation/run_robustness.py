@@ -25,9 +25,9 @@ import argparse
 import csv
 import statistics as st
 from dataclasses import replace
-from pathlib import Path
 from time import perf_counter
 
+from evaluation.tracking import prepare_run
 from loadshed import Policy
 from loadshed.loop import EpisodeConfig, Override, run_episode
 from loadshed.sim import load_tiers, make_grid, make_scenario
@@ -204,8 +204,10 @@ def main():
     a = ap.parse_args()
 
     pol = Policy.from_yaml(a.policy)
-    out = Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    inputs = {"policy": a.policy}
+    if "stability" in a.experiments:
+        inputs["tiers"] = a.tiers
+    out = prepare_run(a, FIELDS, inputs)
     done = set()
     if a.resume and out.exists():
         done = {(r["experiment"], str(r["param1"]), str(r["param2"]), int(r["n"]), int(r["seed"])) for r in load_rows(out)}

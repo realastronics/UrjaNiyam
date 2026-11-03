@@ -25,9 +25,9 @@ import math
 import random
 import statistics as st
 from dataclasses import replace
-from pathlib import Path
 from time import perf_counter
 
+from evaluation.tracking import prepare_run
 from loadshed import Policy, Tier, solve_ladder
 from loadshed.sim import build_problem, make_grid, make_scenario, slot_of_day
 
@@ -114,8 +114,7 @@ def main():
     a = ap.parse_args()
 
     base = Policy.from_yaml(a.policy)
-    out = Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out = prepare_run(a, FIELDS, {"policy": a.policy})
     done = set()
     if a.resume and out.exists():
         done = {(r["family"], r["param"], int(r["n"]), int(r["seed"]), int(r["hour"])) for r in load_rows(out)}

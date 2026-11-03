@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from evaluation.oracle_cpsat import solve_oracle
+from evaluation.run_scale import comparable
 from loadshed import Policy, verify
 from loadshed.metrics import compute_metrics
 from loadshed.sim import build_problem, load_tiers, make_grid, slot_of_day
@@ -56,21 +57,21 @@ for n in a.sizes:
                 ls = solve_min_conflicts(p, time_limit_s=a.ls_time, seed=seed) if a.ls_time > 0 else None
                 rows.append(dict(
                     n=n, tier=tier, ratio=round(scen.peak_ratio, 4), seed=seed, hour=hour,
-                    greedy_ok=gv.ok, greedy_soft=len(gv.soft), greedy_harm=round(gm.total_harm, 2),
+                    greedy_ok=gv.ok, greedy_soft=len(gv.soft), greedy_harm=gm.total_harm,
                     greedy_s=round(g.runtime_s, 4),
-                    sticky_ok=sv.ok, sticky_soft=len(sv.soft), sticky_harm=round(sm.total_harm, 2),
-                    best_harm=None if best_h is None else round(best_h, 2),
+                    sticky_ok=sv.ok, sticky_soft=len(sv.soft), sticky_harm=sm.total_harm,
+                    best_harm=best_h,
                     oracle_status=o.status, oracle_mode=o.mode,
-                    oracle_harm=None if o.objective is None else round(o.objective, 2),
-                    oracle_bound=None if o.best_bound is None else round(o.best_bound, 2),
+                    oracle_harm=o.objective,
+                    oracle_bound=o.best_bound,
                     oracle_proven_gap=None if o.gap is None else round(o.gap, 5),
                     oracle_s=round(o.runtime_s, 2),
                     bnb_status=None if b is None else b.status, bnb_mode=None if b is None else b.mode,
-                    bnb_harm=None if b is None or b.objective is None else round(b.objective, 2),
-                    bnb_bound=None if b is None or b.lower_bound is None else round(b.lower_bound, 2),
+                    bnb_harm=None if b is None or b.objective is None else b.objective,
+                    bnb_bound=None if b is None or b.lower_bound is None else b.lower_bound,
                     bnb_nodes=None if b is None else b.nodes, bnb_s=None if b is None else round(b.runtime_s, 2),
                     ls_status=None if ls is None else ls.status, ls_mode=None if ls is None else ls.mode,
-                    ls_harm=None if ls is None or ls.objective is None else round(ls.objective, 2),
+                    ls_harm=None if ls is None or ls.objective is None else ls.objective,
                     ls_iters=None if ls is None else ls.iterations, ls_s=None if ls is None else round(ls.runtime_s, 2)))
     print("done n =", n, flush=True)
 
@@ -81,6 +82,13 @@ with open(out, "w", newline="") as fh:
     w.writeheader()
     w.writerows(rows)
 
+def references(row, mode):
+    mapped = dict(row, best_greedy_harm=row["best_harm"])
+    for suffix in ("mode", "status", "harm", "bound"):
+        mapped["cpsat_" + suffix] = row["oracle_" + suffix]
+    harms, bound = comparable(mapped, mode)
+    return list(harms.values()), bound
+
 def gap_stats(rows_, key):
     g = [100 * (x[key] - x["oracle_harm"]) / x["oracle_harm"] for x in rows_
          if x[key] is not None and x["oracle_harm"] and x["oracle_harm"] > 0]
@@ -89,7 +97,7 @@ def gap_stats(rows_, key):
 
 print("\nGap = how much MORE harm than the oracle's best solution, in %  (median/max).")
 print("Where the oracle could not prove optimality (status FEASIBLE) its best solution is only an upper bound on the optimum,")
-print("so the true gap is at least this big; 'proven' counts instances solved to proven optimality.")
+print("CP-SAT optimality refers to its integer approximation; the report compares actual schedule harm.")
 print(f"{'n':>4} {'tier':<9} {'inst':>4} | proven/found/relax/infeas | greedy ok | sticky ok | greedy gap  | sticky gap  | best-of-2 gap | oracle s")
 for n in a.sizes:
     for tier in tiers:
@@ -108,48 +116,48 @@ for n in a.sizes:
 if a.bnb_time > 0:
     def med(v):
         return f"{st.median(v):6.1f}" if v else "   n/a"
-    print("\nBranch-and-bound (ours) and the interval for the best greedy baseline (best-of-2):")
+    print("\nStrict mode only: branch-and-bound (ours) and the interval for the best greedy baseline (best-of-2):")
     print("  vs best found = harm above the best solution anyone found (a LOWER estimate of the true gap)")
-    print("  vs best bound = harm above the best proven lower bound   (an UPPER estimate of the true gap)")
+    print("  vs best bound = harm above the same-mode B&B lower bound   (an UPPER estimate of the true gap)")
     print(f"{'n':>4} {'tier':<9} | bnb proven | bnb vs oracle %  (median/max) | best-of-2 gap, median %: vs best found .. vs best bound")
     for n in a.sizes:
         for tier in tiers:
             r = [x for x in rows if x["n"] == n and x["tier"] == tier and x["oracle_mode"] == "strict" and x["bnb_mode"] == "strict"]
             allr = [x for x in rows if x["n"] == n and x["tier"] == tier]
-            pr = sum(1 for x in allr if x["bnb_status"] == "OPTIMAL")
+            pr = sum(1 for x in allr if x["bnb_status"] == "OPTIMAL" and x["bnb_mode"] == "strict")
             d = [100 * (x["bnb_harm"] - x["oracle_harm"]) / x["oracle_harm"] for x in r
                  if x["bnb_harm"] is not None and x["oracle_harm"]]
             lo, hi = [], []
             for x in allr:
-                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"], x.get("ls_harm")) if v]
-                lbs = [v for v in (x["oracle_bound"], x["bnb_bound"]) if v]
-                if x["best_harm"] and ubs and lbs:
+                ubs, bound = references(x, "strict")
+                if (x["best_harm"] is not None and ubs and min(ubs) > 0
+                        and bound is not None and 0 < bound <= min(ubs)):
                     lo.append(100 * (x["best_harm"] - min(ubs)) / min(ubs))
-                    hi.append(100 * (x["best_harm"] - max(lbs)) / max(lbs))
+                    hi.append(100 * (x["best_harm"] - bound) / bound)
             dtxt = f"{med(d)} / {max(d):6.1f}" if d else "      n/a"
             print(f"{n:>4} {tier:<9} | {pr:>4}/{len(allr):<5} | {dtxt:<28} | {med(lo)} .. {med(hi)}")
 
 if a.ls_time > 0:
     def med2(v):
         return f"{st.median(v):6.1f}" if v else "   n/a"
-    print("\nLocal search (ours, weighted min-conflicts). Positive 'vs best found' = local search used MORE harm than the best solution any solver found.")
+    print("\nStrict-mode local search (ours, weighted min-conflicts). Positive 'vs best found' = local search used MORE harm than the best solution any solver found.")
     print(f"{'n':>4} {'tier':<9} | LS vs best found %: median / max | LS gain over best greedy %: median | LS gap interval, median %: vs best found .. vs best bound | LS s")
     for n in a.sizes:
         for tier in tiers:
-            allr = [x for x in rows if x["n"] == n and x["tier"] == tier and x["ls_harm"] is not None]
+            allr = [x for x in rows if x["n"] == n and x["tier"] == tier and x["ls_harm"] is not None and x["ls_mode"] == "strict"
+                    and x["ls_status"] in ("OPTIMAL", "FEASIBLE")]
             if not allr:
                 continue
             d, gain, lo, hi = [], [], [], []
             for x in allr:
-                ubs = [v for v in (x["oracle_harm"], x["bnb_harm"], x["ls_harm"]) if v]
-                lbs = [v for v in (x["oracle_bound"], x["bnb_bound"]) if v]
+                ubs, bound = references(x, "strict")
                 if ubs and min(ubs) > 0:
                     d.append(100 * (x["ls_harm"] - min(ubs)) / min(ubs))
                 if x["best_harm"]:
                     gain.append(100 * (x["best_harm"] - x["ls_harm"]) / x["best_harm"])
-                if lbs and x["ls_harm"]:
-                    lo.append(100 * (x["ls_harm"] - min(ubs)) / min(ubs) if ubs and min(ubs) > 0 else 0.0)
-                    hi.append(100 * (x["ls_harm"] - max(lbs)) / max(lbs))
+                if ubs and min(ubs) > 0 and bound is not None and 0 < bound <= min(ubs):
+                    lo.append(100 * (x["ls_harm"] - min(ubs)) / min(ubs))
+                    hi.append(100 * (x["ls_harm"] - bound) / bound)
             dtxt = f"{med2(d)} / {max(d):6.1f}" if d else "      n/a"
             print(f"{n:>4} {tier:<9} | {dtxt:<31} | {med2(gain):>30} | {med2(lo)} .. {med2(hi):<31} | {st.mean(x['ls_s'] for x in allr):5.1f}")
 print("\nwrote", out)
