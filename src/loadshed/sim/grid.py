@@ -150,4 +150,4 @@ def build_problem(grid: Grid, policy: Policy, scenario: Scenario, start_slot: in
     shortfall = tuple(round(scenario.peak_ratio * shape[t] * demand[t], 1) for t in range(H))
     return Problem(policy=policy, feeders=feeders, shortfall_kw=shortfall,
                    history=history or {}, shift_offset=shift_offset,
-                   forced_cut=forced_cut, forced_keep=forced_keep, approvals=approvals)
+                   forced_cut=forced_cut, forced_keep=forced_keep, approvals=approvals, start_slot=start_slot)
