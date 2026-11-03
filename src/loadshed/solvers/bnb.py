@@ -25,7 +25,7 @@ it retries with that rule relaxed (rung 1 of the ladder), exactly like the oracl
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 import numpy as np
@@ -60,14 +60,11 @@ def solve_bnb(problem: Problem, time_limit_s: float = 30.0, node_limit: int | No
     build_patterns(problem, strict) for the FIRST mode this call runs (strict, or relaxed if force_relaxed).
     force_relaxed=True starts directly at rung 1 (max downtime relaxed); used by the ladder."""
     t0 = perf_counter()
-    r = _run(problem, not force_relaxed, time_limit_s, node_limit, lagrange_iters, warm_start, patterns)
-    setup = r.setup_s
-    if r.status == "INFEASIBLE" and relax_downtime_if_infeasible:
-        r2 = _run(problem, False, time_limit_s, node_limit, lagrange_iters, warm_start, None)
-        r = BBResult(r2.schedule, r2.status, r2.mode, r2.objective, r2.lower_bound, r.nodes + r2.nodes, 0.0,
-                     setup + r2.setup_s)
-    return BBResult(r.schedule, r.status, r.mode, r.objective, r.lower_bound, r.nodes, perf_counter() - t0,
-                    r.setup_s)
+    r = _run(problem, not force_relaxed, time_limit_s, node_limit, lagrange_iters, warm_start, patterns,)
+    if (r.status == "INFEASIBLE" and relax_downtime_if_infeasible and not force_relaxed):
+        r2 = _run(problem, False, time_limit_s, node_limit, lagrange_iters, warm_start, None,)
+        r = replace(r2, nodes=r.nodes + r2.nodes, setup_s=r.setup_s + r2.setup_s,)
+    return replace(r, runtime_s=perf_counter() - t0)
 
 
 def _run(problem: Problem, strict: bool, budget_s: float, node_limit: int | None, lagr_iters: int,
