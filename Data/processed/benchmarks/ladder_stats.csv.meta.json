@@ -1,0 +1,118 @@
+{
+  "code": {
+    "evaluation/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evaluation/analyze_robustness.py": "890c76cbc4fb5dd371c5ec506ce73cb767f14d5ff1ab40e2642d99b6560bc5af",
+    "evaluation/check_budget.py": "293d8b1f991dfdf7a3bf04836c3ab1b68dfc18209f62b465a75e3566c2f857a2",
+    "evaluation/check_determinism.py": "581225fd6288915572e87e2d5636a26ef68a796d3ca3577d13d26d9d9d03bf42",
+    "evaluation/demo_visual.py": "5798035720e285354777d043debb97d51118bb14cf713d40e6b4f1947e903cfb",
+    "evaluation/export_demo.py": "60c5d5118f84bfdb4dbb90e310770f6af9ca278a9bcbbd8927737defa40628f2",
+    "evaluation/oracle_cpsat.py": "6c79143ce69d2d2a0ddda35b3ade980cac55898ca5496f92b76336883cd1dea0",
+    "evaluation/plot_scale.py": "436258249b114dd821bca0654b216afc707cfea69025437a003a155f057469f9",
+    "evaluation/run_forecast.py": "baaf311b923c0d75f44c4c8eb345bf8c80ec60af1fe38554fb5bd326db205124",
+    "evaluation/run_gap.py": "00c2617edce71d2217e581c6b43d3ec5d702bc3aed28b1be92055ba68a62539f",
+    "evaluation/run_hybrid.py": "0fdc17082e1983847432413a9c402d87d0dfcfaec1501f5ceb68a2af1faac4bf",
+    "evaluation/run_ladder_stats.py": "b5314148be6b25847d88d343381cf4d280ddbee6c9b74ebc3170b7521404f4ce",
+    "evaluation/run_robustness.py": "f3fba673e717b7cf5c013ed3b92d7937e99892a1ef98a9e0b1c0487ac3a1c3de",
+    "evaluation/run_scale.py": "6dc1798d3add4f1579996f071f4194d6cfd015c1ef1b748574843a5effffec99",
+    "evaluation/run_sensitivity.py": "51bf548217716a83a41d313c4a3d0bc8c48cb95e0cdad8514f451551b376ff60",
+    "evaluation/tracking.py": "a5bf1a5ae5d8de17ccc4a941543b7743de1730151ed46c96b7f6d1307f8f5db1",
+    "src/loadshed/__init__.py": "f1bba20db2d21d49d6d2e9bac4842d5f4b876126bee0acf9c378c39920ba179d",
+    "src/loadshed/ladder.py": "9abc83dca719f1e946ecb72c3834954bb8653a51e8f76cc656b1a41f5a314355",
+    "src/loadshed/loop.py": "5a5399858e2c51af4b1fcfdd9ebb8730a625cabb6db4cdb55172a993c579439f",
+    "src/loadshed/metrics.py": "9c761fbc410a83f0e83dd7d11550ed9eece65e935be0911fcb62845cfc47b6e8",
+    "src/loadshed/model.py": "b39a2acb0d420e545e8848c667b343bb6bbec0e0325a2e1ae5bf7b778bbefca6",
+    "src/loadshed/policy.py": "bd749d420ecb07c7238f967db330799ff988d0ecfd081be3dda7369704fd59fe",
+    "src/loadshed/sim/__init__.py": "bd7f370ab8c2cbba8f1aa1ccdabd22d843d9b6715cc28d19ea27602a2f583d65",
+    "src/loadshed/sim/grid.py": "f80d2ccf12ac9336cbf7bbbd3f39541e6cf2f56662402e86d30c3e34710cdc25",
+    "src/loadshed/sim/scenarios.py": "88c4cd6f3da22e6bbcd39f8c4088cca7e73380414932bbcf5748b32fdfa63fa8",
+    "src/loadshed/sim/zenodo.py": "c4c1e0692712382936b5aaabd08bb6e1315e6d0117531f50af11fdb5f1315bdb",
+    "src/loadshed/solvers/__init__.py": "d2287176ee08738dba882f0a21e930d90cba541e18530708b6c1f5c3f19ccd48",
+    "src/loadshed/solvers/base.py": "7786abb5f9fecc588f4d5e48a7277e3a8ebda5ce31c2f374040cb9eb883abf02",
+    "src/loadshed/solvers/bnb.py": "7f53e7a7ae61003fdaf12bde5416d9c2409062f90cc725380853daae37b3c089",
+    "src/loadshed/solvers/greedy.py": "0e5dcef4e03fe2548e2ca41aa75429009b9c032532eae6179f4b1297e6eefa8f",
+    "src/loadshed/solvers/hybrid.py": "e274a3cf194c0bb8b97a15cb0391db89e003daac22a4e64f31b4a905c3abf5c8",
+    "src/loadshed/solvers/minconflicts.py": "760de916421dd9809cfd142ba428320c377998caa9ec98ff188e3d0c9851159f",
+    "src/loadshed/solvers/patterns.py": "a0bdf5e6d316fb229af855f54244ac37bcb2eaae3aa5271340791a1d4b796212",
+    "src/loadshed/verify.py": "80c320a7632ebfbf5fb169a1da8193836a46610795b3b29f4656b1ee8323259e",
+    "src/loadshed/whatif.py": "2058efd2e64942d2e4c24756bd0e8828d67ec10d67af42678643ea6360be4bfe"
+  },
+  "environment": {
+    "machine": "AMD64",
+    "packages": {
+      "PyYAML": "6.0.3",
+      "numpy": "2.4.6",
+      "ortools": "9.15.6755"
+    },
+    "python": "3.13.12",
+    "system": "Windows",
+    "threads": {
+      "MKL_NUM_THREADS": null,
+      "OMP_NUM_THREADS": null,
+      "OPENBLAS_NUM_THREADS": null
+    }
+  },
+  "fields": [
+    "family",
+    "param",
+    "n",
+    "seed",
+    "hour",
+    "rung",
+    "status",
+    "proven",
+    "harm",
+    "total_shortfall_kw",
+    "extra_downtime_slots",
+    "critical_pairs",
+    "critical_kw_slots",
+    "coverage",
+    "uncovered_kw",
+    "ladder_s"
+  ],
+  "inputs": {
+    "policy": "d44cc0fc864a7500b5ffb812504308d089285ff0d2654d878e459ffc01ab8ad7"
+  },
+  "schema": 1,
+  "settings": {
+    "budget_per_feeder": 0.6,
+    "families": [
+      "ratio",
+      "override",
+      "tight"
+    ],
+    "hours": [
+      3,
+      10,
+      17,
+      20
+    ],
+    "keep_shares": [
+      0.0,
+      0.3,
+      0.5,
+      0.7,
+      0.9
+    ],
+    "override_ratio": 0.2,
+    "policy": "configs/policy.yaml",
+    "ratios": [
+      0.03,
+      0.0684,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9
+    ],
+    "seeds": 10,
+    "sizes": [
+      20,
+      50
+    ],
+    "time_limit": 24.0
+  }
+}
