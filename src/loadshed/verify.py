@@ -171,11 +171,14 @@ def _check_system_switches(problem: Problem, res: VerifyResult,
     for t, fids in enumerate(switch_events):
         if (problem.shift_offset + t) % pol.shift_slots == 0:
             total = 0
-        for fid in fids:
+        # Ordinary switches use the budget first; forced ones may exceed it.
+        for fid in sorted(fids, key=lambda fid: (_forced(problem, fid, t), fid)):
             total += 1
             if total > pol.system_switch_budget:
-                _flag(problem, res, SYSTEM_SWITCH_BUDGET, fid, t, total - pol.system_switch_budget,
-                      f"{total} operations system-wide this shift, budget {pol.system_switch_budget}")
+                _flag(problem, res, SYSTEM_SWITCH_BUDGET, fid, t,
+                      total - pol.system_switch_budget,
+                      f"{total} operations system-wide this shift, "
+                      f"budget {pol.system_switch_budget}")
 
 
 def _check_relief(problem: Problem, schedule: Schedule, res: VerifyResult,

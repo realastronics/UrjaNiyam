@@ -180,16 +180,16 @@ def _solve_once(problem: Problem, strict: bool, time_limit_s: float, workers: in
             cum = base_cnt[f.id] + sum(sw[(f.id, u)] for u in range(start_idx[f.id], t + 1))
             m.add(cum <= pol.feeder_switch_budget).only_enforce_if(sw[k])
         # system budget, exact: events in slot t are counted in feeder order, like the verifier does
+        # Ordinary switches must fit; forced switches count in later slots.
         before = sys_base + sum(slot_sw[u] for u in range(sys_start, t))
-        prefix = 0
-        for f in problem.feeders:
-            k = (f.id, t)
-            pj = m.new_int_var(0, len(problem.feeders), f"pre_{f.id}_{t}")
-            m.add(pj == prefix + sw[k])
-            if k not in forced:
-                m.add(before + pj <= pol.system_switch_budget).only_enforce_if(sw[k])
-            prefix = pj
-        slot_sw.append(prefix)
+        ordinary = [
+            sw[(f.id, t)] for f in problem.feeders if (f.id, t) not in forced
+        ]
+        for event in ordinary:
+            m.add(
+                before + sum(ordinary) <= pol.system_switch_budget
+            ).only_enforce_if(event)
+        slot_sw.append(sum(sw[(f.id, t)] for f in problem.feeders))
 
     # relief in every slot, with overshoot slack
     lam = round(OBJ_SCALE * pol.overshoot_lambda / KW_SCALE)
