@@ -1,41 +1,53 @@
-# Urja Niyam: load-shedding decision support
+# Urja Niyam
 
-Recommends which feeders to cut, when, and for how long, after the shortfall S(t) is known.
-The dispatcher always has the final word.
+Urja Niyam helps plan power cuts when there is not enough electricity for everyone. It suggests which areas to temporarily disconnect, when to do it, and when to restore their supply. A human operator makes the final decision.
 
-## Layout
-```
-configs/policy.yaml     every tunable number (tiers, limits, switching budgets, margins)
-src/loadshed/model.py   data types: Feeder, FeederHistory, Problem, Schedule
-src/loadshed/policy.py  loads and validates the YAML
-src/loadshed/metrics.py the objective (harm) every solver and the oracle share
-src/loadshed/solvers/   greedy.py (plain + sticky baselines), patterns.py (valid 16-slot patterns per feeder; fast cached builder + simple reference),
-                        bnb.py (branch-and-bound: bounds propagation + Lagrangian lower bound, from scratch),
-                        minconflicts.py (weighted min-conflicts local search, from scratch),
-                        hybrid.py (local search first, then branch-and-bound started from its plan)
-src/loadshed/loop.py    rolling-horizon loop: ledger, operator events, actuation failures, load error, optional meter feedback, metrics
-src/loadshed/ladder.py  relaxation ladder: rung 0/1 plans, rung 2 approval proposals, rung 3 ESCALATE
-src/loadshed/verify.py  independent verifier (no solver code, plain loops)
-src/loadshed/sim/       synthetic grid (grid.py), shortfall scenarios (scenarios.py), Zenodo ratios (zenodo.py)
-scripts/                build_scenario_tiers.py -> data/processed/scenarios/tiers.json
-evaluation/             oracle_cpsat.py (CP-SAT answer key, OFFLINE ONLY), run_gap.py (greedy vs oracle benchmark)
-tests/                  one test per hard rule + history/shift/override cases, grid and data tests
-docs/                   data-sources.md, field-constraints.md (to be written)
-```
-Planned next: run the scale sweep and analyse it, ladder statistics, robustness and thrashing experiments, optional explainer, field validation, `eval/` (CP-SAT oracle lives here, offline only).
+Imagine a town needs 100 units of power, but only 80 are available. Some demand must be disconnected. Cutting the same neighbourhood all evening would be unfair, and cutting a hospital could be dangerous. This project tries to find a plan that covers the shortage while following rules about important services, outage length, and how often an area can be switched off and on.
 
-## Run
-```
-pip install -e ".[dev,data,oracle]"
-pytest
-python scripts/build_scenario_tiers.py      # needs the Zenodo CSVs in data/raw/
-python -m evaluation.run_scale --resume                 # scale sweep (long: run in the background)
-python -m evaluation.run_gap --seeds 2 --hours 10 17   # baselines + our solvers vs CP-SAT oracle (add --sizes 10 50; --ls-time, --bnb-time)
-```
-`ortools` is installed only with `pip install -e ".[oracle]"` and is never imported from `src/loadshed`.
+It works with groups of electricity users connected through a shared supply line, called a *feeder* in the code. It cannot choose individual houses within that group. This also means a cut may remove more demand than the exact shortage.
 
-## Conventions
-- Slot = 15 min. Horizon = 16 slots. Only the first slot is committed, then we replan.
-- `x[f][t] = 1` means feeder f is CUT in slot t.
-- `FeederHistory` is the ledger: current state, slots in that state, switches this shift.
-- A rule broken at a slot the operator forced goes to `waived`, not `hard`. Relief is never waived.
+## What it does
+
+The system compares possible schedules using a cost that represents the modeled impact of power cuts. A lower cost is better under the chosen rules; it is not a direct measurement of real human suffering.
+
+By default, it plans four hours ahead in 15-minute steps. It applies the first step in the simulation, updates what has happened, and plans again. An operator can also give instructions, such as keeping a particular area supplied.
+
+If the usual rules cannot produce a plan, the system tries defined relaxations. Cutting protected services requires approval. If it still cannot produce an acceptable plan, it reports that the situation needs further action.
+
+## Where it works
+
+This is a **planning and decision-support prototype**. It starts with an estimated electricity shortage. It does not predict the whole electricity market, control real switches, or simulate how power flows through physical wires.
+
+The experiments use simulated areas and demand. Tests and benchmarks help check the software and compare its methods. They do not establish that it is ready to operate a real electricity network.
+
+## How the code fits together
+
+`configs/policy.yaml` contains the rules and limits. `src/loadshed/sim/` creates simulated situations, and `src/loadshed/solvers/` searches for schedules. `verify.py` checks schedules separately from the search code.
+
+`ladder.py` handles relaxations and approval requests. `loop.py` moves the simulation forward and replans. `evaluation/` contains experiments and the demo exporter, while `tests/` checks expected behaviour.
+
+## Run it
+
+Use Python 3.11 or newer. From the project folder, install the dependencies and run the tests:
+
+```bash
+python -m pip install -e ".[dev,data,oracle]"
+python -m pytest -q
+```
+
+Generate the demo data:
+
+```bash
+python -m evaluation.export_demo
+python -c "import json; from pathlib import Path; p=Path('data/processed'); d=json.loads((p/'demo.json').read_text(encoding='utf-8')); (p/'demo_data.js').write_text('window.DEMO='+json.dumps(d, allow_nan=False)+';', encoding='utf-8')"
+```
+
+Open `data/processed/demo.html` in your browser. Choose a scenario and press Play. The page replays a computed schedule; it does not run a live electricity network.
+
+For a small benchmark using the included scenario file:
+
+```bash
+python -m evaluation.run_scale --sizes 10 --seeds 1 --hours 17 --ls-time 5 --bnb-time 5 --oracle-time 5 --tiers data/processed/scenarios/tiers.json --out data/processed/benchmarks/quick_check.csv
+```
+
+This compares search methods under short time limits. It is a quick check, not a complete performance study. Keep the output CSV with its `.meta.json` file. To continue the same experiment, repeat the same command with `--resume`.
