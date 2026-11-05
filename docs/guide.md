@@ -1,324 +1,325 @@
-# Urja Niyam: Project Guide
+# Urja Niyam: How We Planned Power Cuts and What We Learned
 
-Urja Niyam was built to help decide which areas should temporarily lose electricity when there was not enough power to supply everyone. We treated this as a planning problem: cover the shortage, respect the operating rules, and reduce the modeled impact of the cuts.
+## 1. What we built and what it achieved
 
-Imagine a town needed 100 units of power, but only 80 were available. Disconnecting 20 units of demand sounded simple until we considered who would lose supply. One area might contain a hospital. Another might already have been without power for an hour. A third might need a guaranteed supply period. The cheapest immediate choice could also leave us with a difficult situation later.
+We built **Urja Niyam**, a decision-support mechanism that plans temporary power cuts when electricity supply falls short of demand. It suggests which areas to disconnect, when to restore them, and how to respond when the usual rules can not produce an acceptable schedule.
 
-We built a system that considered these decisions together. It included a simulated electricity network, several scheduling algorithms, an independent schedule checker, a replanning loop, operator instructions, explanations, and a browser demo. The work combined **knowledge representation, constraint satisfaction, heuristic search, optimization, and planning under uncertainty**.
+The main result is that **looking ahead produced better schedules than making only immediate choices** in the reviewed experiments. Local search found strong schedules across the tested sizes. Exact search helped establish optimal answers on smaller problems, but became harder to complete as the problem grew.
 
-## 1. The problem we addressed
+We also built the parts needed to make those recommendations understandable: a separate schedule checker, explicit relaxation steps, operator approval, comparisons of alternative instructions, and a visual replay.
 
-We worked at the **rotational load-shedding planning layer**. The system received an estimated shortage over the coming hours and proposed which supply groups to disconnect and restore.
+Our recommendation from the experiments was to use local search for practical scheduling at larger tested sizes, retain branch-and-bound for small problems and lower bounds, and use CP-SAT as an offline comparison. These were conclusions about the simulated problems and configured search budgets, not evidence of readiness to control a real electricity network.
 
-A supply group was called a *feeder* in the code: a shared electricity line serving a group of consumers. Throughout this guide, “group” refers to that switchable unit. The system could disconnect a whole group, but could not select individual houses within it.
+## 2. The situation we started with
 
-This distinction mattered. If the remaining shortage was 200 kW and the smallest suitable group used 300 kW, cutting it removed more demand than necessary. Choosing a schedule therefore involved both coverage and the cost of unnecessary cuts.
+When supply could not meet demand, some consumption had to be reduced. The difficult question was who should lose supply and for how long.
 
-We did not build demand forecasting, emergency under-frequency protection, or a physical power-flow model. We did not model transmission topology, line voltages, or equipment protection. The shortage was an input, and the operating rules were assumptions supplied to the planner.
+Consider a town that needed 100 units of power when only 80 were available. Disconnecting 20 units sounded straightforward. But one area might contain a hospital, another might already have been disconnected for an hour, and a third might have a promised supply period. A decision that worked immediately could create a worse problem later.
 
-The intended user was a control-room operator. The prototype recommended decisions and exposed their consequences; it did not control real switches. Operator approval and command execution were represented through software callbacks and simulation.
+We treated those connected decisions as a **constraint optimization problem**. The system first asked whether a schedule followed the represented rules. Among acceptable schedules, it searched for one with a lower modeled cost.
 
-## 2. How we turned the problem into a model
+The unit of control was a shared supply line serving a group of consumers, called a **feeder** in the code. We used “supply group” or “area” when explaining it. The system could disconnect the whole group, not select individual houses within it.
 
-We formulated a **constraint optimization problem**. A constraint satisfaction problem defined variables, their possible values, and rules that valid assignments had to satisfy. Optimization added a preference: among acceptable schedules, which had the lowest cost?
+This made the choices uneven. If the remaining shortage was 200 kW and a suitable group used 300 kW, disconnecting it removed more demand than necessary. That excess was part of the scheduling trade-off.
 
-Our basic variable was:
+### Where the system operated
 
-```text
-x[group, slot] = 0 if supplied, 1 if disconnected
+We worked at the **rotational load-shedding planning layer**, using 15-minute decisions over the coming hours.
+
+The shortage was supplied as an input. We did not build demand forecasting, emergency protection relays, voltage control, or a physical power-flow simulation. We did not connect the prototype to real switching equipment.
+
+The intended role was to assist a control-room operator. The software proposed and checked schedules, while approval and execution were represented through callbacks and simulation.
+
+## 3. The architecture: how the parts worked together
+
+The architecture followed a repeated cycle: describe the current situation, search for a schedule, check it, apply one simulated step, and record what actually happened.
+
+We separated these responsibilities so that finding a low-cost answer was not confused with checking whether it followed the rules.
+
+```mermaid
+flowchart TD
+    Inputs["Shortage, loads and policy"] --> Build["Build the planning problem"]
+    Ledger["Actual states and switching history"] --> Build
+    Operator["Operator instructions"] --> Build
+
+    Build --> Planning["Relaxation ladder and scheduling algorithms"]
+    Planning --> Check["Independent schedule checks"]
+    Check --> Outcome{"Planning outcome"}
+
+    Outcome -->|"Checked plan"| Execute["Simulate the next 15-minute action"]
+    Outcome -->|"Critical cuts proposed"| Approval{"Operator approval"}
+    Approval -->|"Approved and checked"| Execute
+    Approval -->|"Declined"| Escalate["Escalation or best-effort response"]
+    Outcome -->|"No acceptable full plan"| Escalate
+
+    Execute --> Ledger
+    Execute --> Record["Record costs, coverage and actions"]
+    Record --> Replay["Demo replay and evaluation"]
+
+    Build -.-> Compare["What-if comparisons"]
+    Compare -.-> Planning
+    Compare --> Explain["Alternative costs and rule reasons"]
 ```
 
-By default, a slot lasted 15 minutes and the planning horizon contained 16 slots, or four hours. A problem with 50 groups therefore contained 800 basic on/off decisions.
+The ledger connected one planning cycle to the next. If a command failed, the next problem used the actual state rather than assuming that the intended action had happened.
 
-Each group had an estimated load for every slot, a consumer count, a priority, a type, and any promised supply requirements. Priorities were Flexible, Normal, and Critical. Types included residential-like, agricultural, industrial, and mixed demand profiles.
+The what-if tool reused the planning process with an additional instruction, such as keeping one area supplied. CP-SAT remained outside this operational cycle and was used separately for evaluation.
 
-The model also included **history**: whether the group was currently disconnected, how long it had remained in that state, and how many switching operations it had used during the shift. Without history, a new plan could incorrectly treat a continuing outage as if it had just begun.
+### How this appeared in the code
 
-### The operating rules
+`model.py` defined the shared objects: supply groups, histories, problems, and schedules. `policy.py` loaded and validated operating settings from `configs/policy.yaml`. `metrics.py` kept cost and reporting calculations consistent.
 
-The relief from disconnected groups had to cover the shortage with the configured safety margin. Restoration could temporarily increase demand, so the model also accounted for a restoration surge.
+The `sim/` package generated the experimental grids and shortage profiles. The `solvers/` package searched for schedules. `verify.py` checked schedules without importing the search algorithms.
 
-Minimum cut and restoration durations prevented rapid switching. Per-group and system-wide switching budgets limited operations during a shift. Promised supply requirements protected designated supply periods. Critical groups required approval before a proposed cut could become an authorized action.
+`ladder.py` managed relaxation and approval steps. `loop.py` managed replanning and simulated execution. `whatif.py` compared instructions and produced basic explanations. Experiments, plotting, and demo export lived in `evaluation/`, while automated checks lived in `tests/`.
 
-Maximum consecutive downtime was enforced during strict search. It could later be relaxed through a defined process, with the excess reported.
+We used **Python**, **NumPy**, and **PyYAML** for the core implementation, **Pytest** for testing, and **Matplotlib** for plots. **Google OR-Tools CP-SAT** supplied an offline comparison model. The browser demo used HTML and JavaScript with exported JSON.
 
-Operator instructions forced particular groups on or off. Some conflicting operating rules could be recorded as waived at forced actions, rather than silently treated as satisfied. Required relief was not waived simply because an operator instruction made it difficult to achieve.
+No trained neural network or language model was required to produce schedules or explanations.
 
-The switching-budget implementation also distinguished forced actions from ordinary choices. Forced actions were handled explicitly and still affected the remaining history and future switching capacity.
+## 4. How we represented a schedule
 
-### The objective we minimized
+Each decision stated whether a supply group was on or disconnected in a particular slot:
 
-We called the cost **harm**. It represented a policy preference, not money or measured human suffering.
+```text
+x[group, slot] = 0 when supplied
+x[group, slot] = 1 when disconnected
+```
 
-The outage component increased with priority weight, time-of-day weight, consumer count, and uninterrupted outage length:
+The default horizon contained sixteen 15-minute slots, or four hours. With 50 groups, that created 800 basic on/off decisions.
+
+Each group carried an estimated load for every slot, a consumer count, a priority, a type, and any promised supply requirements. Priorities were Flexible, Normal, and Critical.
+
+We also carried history into the problem: the current state, time spent in that state, and switching operations already used during the shift. Otherwise, a new plan could incorrectly treat a continuing outage as a fresh one.
+
+### Constraints: what a schedule had to respect
+
+The disconnected load had to cover the estimated shortage with the configured safety margin. The model also accounted for **restoration surge**, the temporary increase in demand when supply returned.
+
+Minimum outage and restoration durations prevented rapid switching. Individual and system-wide switching budgets limited operations during a shift. Promised supply requirements protected designated supply periods. Critical cuts required approval.
+
+Maximum consecutive downtime was enforced in strict search. It could be relaxed later through an explicit process rather than silently ignored.
+
+Operator instructions could force a group on or off. Specific conflicts caused by forced actions were recorded as waivers where the model allowed them. Required relief was not waived merely to make a proposed full-coverage schedule pass.
+
+### The objective: what made one valid schedule preferable
+
+We called the objective **harm**. It was a policy-based score, not money or a direct measurement of human suffering.
+
+The outage cost depended on priority, time of day, number of consumers, and uninterrupted outage length:
 
 ```text
 outage cost =
     priority weight × time weight × consumers
-    × (1 + growth factor × (consecutive cut slots − 1))
+    × (1 + growth factor × (consecutive outage slots − 1))
 ```
 
-The planning objective added penalties for excess relief and switching operations.
+The planning objective also penalized excess relief and switching operations.
 
-For example, with a Normal-group weight of 5, a time weight of 1, and 1,000 consumers, the default growth factor produced outage costs of 5,000, 7,500, 10,000, and 12,500 across four consecutive slots.
+For example, with a priority weight of 5, time weight of 1, and 1,000 consumers, the default settings produced outage costs of 5,000, 7,500, 10,000, and 12,500 across four consecutive slots.
 
-That four-slot outage accumulated 35,000 outage cost. Two separate two-slot outages accumulated 25,000 before considering extra switches, restoration surge, and other constraints. This encouraged rotation where it was feasible.
+A continuous four-slot outage therefore accumulated more outage cost than two separate two-slot outages. But splitting the outage also required extra switching and restoration, so the algorithm still had to consider the complete schedule.
 
-It did not guarantee fairness across households or across weeks. A group’s assigned priority and consumer count influenced its treatment, and those choices remained policy judgments.
+This encouraged rotation where feasible. It did not guarantee fairness across households or across weeks.
 
-### The main defaults
+### The defaults were assumptions
 
-The default policy used 15-minute slots, a four-hour horizon, and eight-hour shifts. Minimum cut and restoration durations were two slots each. Maximum downtime was twelve slots, or three hours.
+The default minimum cut and restoration durations were thirty minutes each. Maximum downtime was three hours. The default shift lasted eight hours.
 
-Priority weights were 1, 5, and 1,000 for Flexible, Normal, and Critical groups. The default safety margin was 5%. The restoration-surge model started at 5%, increased by one percentage point per outage slot, and was capped at 30%.
+Priority weights were 1, 5, and 1,000. The safety margin was 5%. Restoration surge started at 5%, increased with outage length, and was capped at 30%.
 
-The default switching allowance was three operations per group and twenty system-wide per shift. Scale experiments increased the system allowance with grid size using `max(20, ceil(0.6 × number of groups))`.
+The default switching allowance was three operations per group and twenty system-wide per shift. Scale experiments increased the system allowance with grid size.
 
-These were modeling settings, not established operating standards for a real utility. They determined the problem being solved and therefore shaped the results.
+These settings defined the experimental problem. They were not presented as confirmed operating standards for a real electricity utility.
 
-## 3. Where the inputs came from
+## 5. Where the experimental inputs came from
 
-Historical state-level electricity data informed the **size of the shortage scenarios**. It did not supply real group-level switching histories or four-hour operating schedules.
-
-The earlier data preparation used met and unmet peak-demand series from the Hunt and Bloomfield dataset described in the project’s source notes. It converted these into a shortage ratio:
+Historical state-level met and unmet demand data informed the shortage levels. We expressed shortage as a proportion so that the same scenario could be applied to different simulated grid sizes:
 
 ```text
 shortage ratio = unmet demand / (met demand + unmet demand)
 ```
 
-The preparation excluded aggregate and non-state columns, handled missing values and duplicate dates, and rejected suspect extreme ratios. Corrected met-demand values were preferred where available.
+The preparation handled missing values and duplicate dates, excluded aggregate or non-state columns, and rejected suspect extreme ratios. Percentiles from days with nonzero unmet demand produced scenario levels of approximately **2.96%, 6.84%, and 20%**.
 
-Scenario percentiles were calculated from days with nonzero unmet demand. The selected levels were approximately **2.96%, 6.84%, and 20%**, labeled mild, moderate, and crisis.
+We labeled these mild, moderate, and crisis. They were experimental categories, not predictions of how often a particular town would experience a shortage.
 
-These labels were experimental categories. A pooled percentile across states and years did not establish how often a particular local electricity network would experience that shortage.
+The historical data was daily. It did not provide real 15-minute switching schedules. We therefore generated the within-day shortage shape, individual group loads, consumer counts, agricultural supply blocks, and other grid details synthetically.
 
-The source data was daily. We therefore created the within-day shortage shape ourselves: a trapezoid that rose, held, and fell. Individual supply groups, their loads, consumer counts, histories, and agricultural supply blocks were also synthetic.
+A random seed fixed the generated instance so that methods could face the same problem. It did not guarantee identical results from time-limited searches under different computing conditions.
 
-A random seed fixed the generated grid so that different algorithms could face the same instance. This supported controlled comparisons, but did not make every time-limited solver run identical.
+## 6. How the algorithms made decisions
 
-## 4. How the architecture worked
+The methods served different purposes. Greedy search supplied quick baselines. Branch-and-bound searched for exact answers and bounds. Local search produced practical schedules without requiring a complete proof. The hybrid connected local search with exact search.
 
-The architecture followed a repeated sequence: represent the current situation, search for a schedule, check it, apply one simulated step, and update the history.
+### Greedy: a quick, immediate choice
 
-`model.py` defined the shared objects, including the problem, schedule, groups, and history. `policy.py` loaded and validated settings from `configs/policy.yaml`. `metrics.py` contained objective and reporting calculations.
+The greedy methods selected cuts using immediate cost and useful relief while respecting decisions already fixed by constraints.
 
-The `sim/` package created synthetic grids and shortage scenarios. Policy settings and generator assumptions were kept distinct: not every synthetic-data choice lived in the YAML file.
+One version preferred to retain existing cuts. This could reduce switching, but could also extend outages or leave less flexibility later.
 
-The algorithms lived in `solvers/`. They proposed schedules, while `verify.py` checked schedules independently of their search logic. `ladder.py` controlled relaxation and approval steps. `loop.py` connected planning with simulated execution. `whatif.py` compared operator instructions and produced basic reasons.
+We compared against the better valid result from the two baselines. An inexpensive schedule that violated the represented rules did not count as a successful baseline.
 
-The `evaluation/` directory contained experiments, the CP-SAT comparison model, plotting, and demo export. The `tests/` directory checked rules, algorithms, and interactions.
+Their main limitation was **short-sightedness**. A locally attractive cut could consume a switching opportunity or create a costly situation later in the horizon.
 
-We implemented the system in **Python**, with **NumPy** for array calculations and **PyYAML** for configuration. **Pytest** supported testing, **Matplotlib** produced plots, and **Google OR-Tools CP-SAT** provided an offline comparison solver. The demo used HTML and JavaScript with exported JSON.
+### Patterns: reducing repeated work
 
-There was no trained neural network or language model in the scheduling path.
+Most rules concerned one group’s behavior over time. We used that structure to generate valid **patterns**, where each pattern was a complete on/off row for one group.
 
-The diagram:
+The search then selected one pattern per group. Individual duration and history rules were largely handled during pattern construction; total relief and shared switching limits still had to be coordinated across groups.
 
-flowchart TD
-    Inputs["Estimated shortage and group loads"] --> Problem["Build planning problem"]
-    Policy["Policy, priorities and operating limits"] --> Problem
-    History["Ledger of actual states and switches"] --> Problem
-    Operator["Operator instructions and approvals"] --> Problem
+Patterns carried their costs, net relief, and switching information. Caching reusable structures and using array operations reduced repeated setup work. A simpler reference builder helped check the optimized implementation.
 
-    Problem --> Ladder["Relaxation ladder"]
-    Ladder --> Search["Search for a schedule"]
-    Search --> Verify["Independent schedule checker"]
-    Verify --> Decision{"Acceptable outcome?"}
+This reduced unnecessary work, but did not remove the underlying difficulty of choosing compatible patterns.
 
-    Decision -->|"Checked plan"| Execute["Simulate the first 15-minute step"]
-    Decision -->|"Approval required"| Operator
-    Decision -->|"No acceptable plan found"| Escalate["Report escalation and uncovered demand"]
+### Branch-and-bound: searching with a proof in mind
 
-    Execute --> History
-    Execute --> Logs["Record actions, costs and unmet demand"]
-    Logs --> Demo["Browser replay and evaluation"]
+Branch-and-bound explored partial combinations of patterns.
 
-    Problem -.-> WhatIf["What-if comparison"]
-    WhatIf -.-> Ladder
-    WhatIf --> Explain["Cost differences and basic rule reasons"]
+It used **constraint propagation** to remove impossible choices. Suppose a slot required 1,000 kW, and two groups could provide at most 900 kW together. A third group then had to contribute at least 100 kW. Patterns unable to provide that contribution could be removed.
 
-## 5. How the scheduling algorithms worked
+The solver also calculated an optimistic **lower bound** using Lagrangian relaxation. This temporarily priced shared relief requirements so that groups could be considered more independently.
 
-We implemented several methods because speed, solution quality, and proof were different goals. A fast acceptable schedule could be useful even when proving it optimal was too expensive.
+If even that optimistic estimate could not improve the best complete schedule already found—the **incumbent**—the branch was skipped. Variable and value ordering guided which decisions were explored first.
 
-### Greedy baselines
+Completing the search could establish optimality or infeasibility for the represented problem. Reaching a time limit could instead leave a feasible schedule, a bound, or no found solution. Those were different outcomes.
 
-The greedy methods made locally attractive choices while moving through the slots. They considered immediate harm and useful relief, accounting for decisions already fixed by constraints.
+### Local search: improving a complete candidate
 
-One version preferred retaining existing cuts. This reduced some switching but could extend outages or leave less flexibility later.
+Our **weighted min-conflicts local search** started with a complete pattern assignment and improved it through smaller changes.
 
-The baseline comparison used the better valid schedule from the two methods. Validity mattered: a cheap schedule that broke the rules was not a successful baseline.
+Its score combined harm with penalties for unmet relief and switching conflicts. Breakout weights increased pressure on persistent violations. A tabu mechanism discouraged immediate cycling, while restarts explored different choices.
 
-The main weakness was limited look-ahead. A good choice now could consume switching capacity or create a costly outage later.
+Temporary search states could violate constraints. A returned schedule still had to pass checking before acceptance.
 
-### Pattern-based representation
+Local search traded proof for practical progress. It could find a strong schedule without demonstrating that no better schedule existed.
 
-Most rules concerned one group’s behavior over time. We used that structure to generate valid **patterns**: complete on/off rows for individual groups across the planning horizon.
+### Hybrid and CP-SAT
 
-Instead of searching directly over every binary decision, the algorithms selected one pattern per group. Individual duration, history, approval, and related restrictions were handled during pattern construction. The remaining coordination centered on total relief and shared switching capacity.
+The hybrid ran local search first and passed its schedule to branch-and-bound as a warm start. A better incumbent could help exact search prune more branches.
 
-Patterns carried cost, net relief after restoration effects, and switching information. Caching reusable structures and using array operations reduced repeated setup work. A simpler reference builder supported checks on the optimized implementation.
+That explained the design, but did not guarantee that splitting a budget would outperform either method using the whole budget.
 
-This reduced the work done during search, but did not remove the combinatorial difficulty of choosing compatible patterns.
+CP-SAT provided an independent implementation for comparison. It used integer-scaled quantities, so its numerical model was not identical to the original one. Its returned schedules were checked against our model, while its optimality claims and bounds referred to its integer formulation.
 
-### Branch-and-bound
+The revised reports therefore did not pool CP-SAT bounds with B&B bounds as if they certified exactly the same problem.
 
-Our branch-and-bound solver explored a tree of partial schedules. Each branch selected a pattern for a group.
+## 7. How the system handled difficult situations
 
-It first applied **constraint propagation**. Suppose a slot required 1,000 kW, while two groups could provide at most 900 kW together. A third group then had to provide at least 100 kW. Patterns that could not meet that necessary contribution were removed.
+The **relaxation ladder** made concessions explicit.
 
-Such removals could trigger further removals, so propagation continued until no more changes followed. An empty domain or an impossible coverage requirement ended that branch.
+It first attempted a strict plan. If that did not succeed, it tried relaxing maximum downtime and reported the excess. A later stage could propose Critical cuts requiring approval. If no acceptable full plan was found, the system escalated and reported a best-effort coverage estimate.
 
-The solver then calculated a **lower bound** using Lagrangian relaxation. It temporarily priced the shared relief requirements, allowing groups to be evaluated more independently. This easier problem supplied an optimistic estimate of the best cost obtainable from that branch.
+Moving to a higher rung did not automatically prove that the lower rung was impossible. A time-limited search might simply have failed to find an answer. The ladder recorded whether lower-rung failure claims were proven or remained search failures.
 
-If the bound could not beat the best complete schedule already found—the **incumbent**—the branch was pruned. Variable ordering used regret between attractive alternatives, and value ordering explored cheaper choices first.
+Its `proven` field therefore did not mean that the returned schedule had minimum harm. Likewise, best-effort coverage was not necessarily the greatest coverage any possible schedule could achieve.
 
-A completed search could prove optimality or infeasibility for the represented problem. A time-limited search could instead return a feasible incumbent, a bound, or no found solution. These outcomes were deliberately distinguished.
+### Replanning from actual outcomes
 
-### Weighted min-conflicts local search
+The **rolling-horizon loop** planned four hours ahead but committed only the first 15-minute action. It then observed the simulated outcome, updated the ledger, and planned again.
 
-Local search worked with a complete assignment of patterns and improved it through small changes.
+If a restoration command failed, the next cycle treated the group as still disconnected. Recording the intended action as successful would have corrupted future duration and switching decisions.
 
-Its score combined harm with penalties for unmet relief and switching-budget conflicts. It considered changes to groups that could help resolve a conflict and selected promising moves.
+We simulated command failures, load-estimate errors, changing shortage inputs, and operator instructions. These could leave actual demand uncovered even when the planned schedule satisfied the estimated problem.
 
-**Breakout weights** increased penalties when violations persisted. A **tabu mechanism** discouraged immediate cycling. Restarts perturbed the search, and penalty adjustment allowed exploration beyond the current feasible solution before repairing violations.
+Optional meter feedback adjusted estimates using available observations. It did not assume that a continuously disconnected group revealed its hidden demand.
 
-Temporary search states could be invalid. The schedule returned for use still had to pass verification.
+Warm starts reused the previous plan, shifted forward. Stability measurements distinguished changes in future plans from unexpected changes in committed actions. Ordinary rotation was not automatically treated as unstable behavior.
 
-Local search generally offered practical schedules on larger instances, but did not normally prove optimality or infeasibility.
+## 8. How we made recommendations understandable
 
-### The hybrid
+The what-if tool compared the planning result before and after an instruction such as “keep this area supplied.” When suitable objective values were available, it reported the cost difference.
 
-The hybrid ran local search first and handed its result to branch-and-bound as a warm start. A better incumbent allowed exact search to prune more branches.
+The first-slot explainer examined the alternative of keeping each selected cut group on. Basic rule reasons also identified operator instructions, missing Critical approval, unfinished minimum durations, or exhausted individual switching allowances.
 
-This explained its purpose, but did not guarantee superiority. Dividing a fixed budget between methods could perform differently from giving either method the entire budget.
+When those rules did not directly identify the decision, the code reported that the optimizer had selected it. It did not invent a detailed explanation.
 
-### CP-SAT as an offline comparison
+These comparisons supported inspection, but were not complete causal proofs. Different searches could find different-quality schedules, and different relaxation modes could make a simple subtraction misleading.
 
-We encoded a comparison model using OR-Tools CP-SAT. It provided another implementation against which our schedules could be evaluated.
+The supported interpretation was: **“This alternative produced this cost under the comparison.”** It was not automatically: “This was the only possible or globally best decision.”
 
-CP-SAT used integer-scaled quantities. Rounding constraints and objective coefficients meant its numerical model was not identical to the original one. Returned schedules were checked against our model, but its optimality claim referred to its own integer formulation.
+The browser demo made the sequence visible. It replayed supply states, shortage, relief, and operator-override cases. It explained computed behavior; it did not operate a live electricity network or solve new requests inside the browser.
 
-For that reason, the revised reports retained CP-SAT bounds for inspection but did not combine them with B&B bounds as if they certified exactly the same optimization problem.
+## 9. Results: what someone could reasonably conclude
 
-## 6. Verification, relaxation, and simulated execution
+**The clearest result was that planning ahead was useful.** Local search produced strong schedules across the tested sizes, while exact search supplied stronger guarantees mainly on smaller cases.
 
-The independent verifier checked schedule shape, state changes, durations, switching budgets, relief, approvals, overrides, and promised supply requirements. It reported hard violations, soft violations, and recorded waivers separately.
+That led to a practical recommendation: use each method for what the evidence supported. Local search was the practical scheduling method for larger tested instances. Branch-and-bound remained valuable for small-instance proofs and bounds. CP-SAT provided an independent offline comparison.
 
-This separation reduced dependence on any single search algorithm. It did not prove that the model matched the real world or eliminate the possibility of a checker bug.
+The scale experiment covered 10, 50, and 200 supply groups, three shortage levels, ten seeds, and four start times. The trends below were interpreted using the retained observations under the agreed exclusions.
 
-When strict planning did not succeed, the **relaxation ladder** tried defined alternatives. It first relaxed maximum downtime. A later stage could propose Critical cuts requiring explicit approval. If no acceptable plan was found, it escalated and reported a best-effort coverage estimate.
+### What the different methods achieved
 
-A higher rung did not automatically mean the lower rung was mathematically impossible. The search might simply have exhausted its budget. The ladder recorded this distinction. Its `proven` field concerned lower-rung failure claims, rather than proof that a returned plan minimized harm.
+| Method | 10 supply groups | 50 supply groups | 200 supply groups |
+|---|---|---|---|
+| **Best valid greedy baseline** | Generally produced higher-cost schedules than the stronger search methods | Often left substantial room for improvement | Produced higher-cost schedules than local search in the reported comparisons |
+| **Branch-and-bound** | Proved optimality in **103 of 120 cases** | Full search was attempted, but no optimality proofs were recorded within the budget | Returned feasible schedules in **120 of 120 cases**, under a one-node limit |
+| **Local search** | Matched the best recorded cost in **115 of 120 cases** | Frequently matched the best recorded schedule, without proving optimality | Returned strict feasible schedules and matched the best recorded cost in **120 of 120 cases** |
+| **Hybrid** | Tested separately | Not included in this sweep | Not included in this sweep |
+| **CP-SAT** | Reported integer-model optimality in **116 of 120 cases** | Found feasible schedules on most cases, without completing optimality proofs | Not run |
 
-The final coverage estimate used repeated searches over a shortage-scaling factor. It was a best effort under the method and budget, not necessarily the maximum coverage any schedule could achieve.
+“Best recorded” meant the lowest cost found by the methods actually run on that case, including ties. It did not necessarily mean the true best possible schedule.
 
-### The rolling-horizon loop
+### What this meant in ordinary words
 
-The loop planned four hours ahead but committed only the first 15-minute action. It then updated the ledger and planned again. This was **receding-horizon planning**.
+For the smaller problems, we could often check whether a schedule was genuinely optimal under the model. Local search frequently reached the same cost without producing that proof itself.
 
-Consider a group that was supposed to be restored but whose switching command failed. The next cycle needed to know that it remained disconnected. Updating history from the intended command would have corrupted duration and switching decisions.
+For the medium-sized problems, finding a useful schedule was easier than proving that no better one existed. Local search performed well against the alternatives we tested, but uncertainty remained.
 
-The simulation therefore recorded actual outcomes. Failed commands, load-estimate errors, changed shortage inputs, and operator instructions could alter what happened after planning.
+For the largest tested size, local search continued to produce strict feasible schedules. However, CP-SAT was not run there and B&B performed only limited search. We therefore did not interpret the result as proof that local search defeated fully searched alternatives at that size.
 
-A schedule that covered estimated demand could still leave a real simulated shortage because loads differed or a command failed. We measured that separately from schedule validity.
+The B&B runtime drop at 200 groups reflected this one-node limit. It did not mean that solving larger problems exactly became easier.
 
-The loop’s total time limit was divided across solver attempts. Consequently, a nominal twelve-second ladder budget did not give every attempt twelve seconds. Small per-attempt budgets could affect hard cases.
+The methods also received different budgets. Local search was configured with 30 seconds, of which roughly 21 seconds went to its strict phase. B&B and CP-SAT received 60-second limits where fuller searches were enabled. These results described that experiment, rather than an equal-time competition.
 
-### Feedback and stability
+### What the ladder results showed
 
-Optional meter feedback adjusted load estimates using observations available while groups were supplied, including the observation associated with a cut. It did not assume that a continuously disconnected group revealed its hidden demand.
+The retained ladder results contained **2,159 cases**: **1,826 plans, 71 approval requests, and 262 escalations**. Returned plans included both strict and downtime-relaxed outcomes.
 
-Warm starts shifted the previous plan forward and reused it. We measured both changes in overlapping plans and surprises in the next committed action. We also counted unexpected reversals.
+This showed that the prototype exercised different responses rather than pretending every situation had an ordinary solution. Sometimes it produced a plan under the original rules. Sometimes it required a concession or approval. Sometimes it handed the problem back with an escalation.
 
-This distinction mattered because ordinary rotation could legitimately contain short on/off sequences. Counting every short cycle as instability would have misrepresented the system.
+These counts were not a real-world success rate. An escalation could reflect genuine difficulty, restrictive inputs, or the search budget. It did not always prove that a better method could find no acceptable plan.
 
-## 7. How explanations were produced
+### What the robustness work established
 
-The **what-if** tool solved the problem before and after an instruction such as “keep this area supplied.” Where both runs supplied objective values, it reported their difference.
+We implemented experiments for safety margins, meter feedback, operator overrides, command failures, and planning stability.
 
-The first-slot explainer examined the alternative of keeping each selected cut group on. This gave a concrete comparison an operator could inspect.
+The central lesson was that **schedule cost and demand coverage had to be read together**. An inexpensive episode could still leave demand uncovered. A schedule that passed checks against estimated inputs could also perform differently when actual loads or command outcomes changed.
 
-We also implemented basic rule reasons: an explicit operator order, missing approval for a Critical cut, an unfinished minimum duration, or an exhausted individual switching allowance. Otherwise, the explanation stated that the optimizer selected the action.
+The available robustness output showed such unmet demand in some episodes. It supported investigating these trade-offs, but the current full CSV had not been independently reviewed. We therefore did not repeat the old guide’s precise benefit percentages as final verified findings.
 
-These were useful explanations, but not complete proofs of necessity. Different search runs could find different-quality schedules. Different relaxation modes could also make a simple cost subtraction misleading.
+### What we recommended from the evidence
 
-We therefore interpreted the result as “this alternative produced this cost under the comparison,” rather than claiming that the chosen cut was the only possible or globally best decision.
+We recommended retaining simple baselines because they made the value of optimization measurable. We recommended local search for practical scheduling at the larger tested sizes, while using exact methods where proof or a useful bound justified the effort.
 
-The browser demo replayed computed baseline and override episodes. It showed group supply states, shortage, relief, and consequences over time. It helped explain the system visually, but did not solve new operator requests live in the browser.
+We also recommended reporting feasibility, cost, unmet demand, relaxation, and search status together. A single low harm score could not describe whether the system had done a good job.
 
-## 8. How we tested the system
+## 10. Why the results deserved qualified trust
 
-We checked the model at several levels rather than relying only on successful demonstrations.
+We checked behavior at several levels.
 
-Hand-calculated cases checked costs and individual rules. Small exhaustive searches provided reference answers for solver comparisons. Pattern tests compared accepted rows with verification behavior and compared the fast builder with its reference implementation.
+Hand-calculated examples tested costs and rules. Small exhaustive searches provided reference answers. Pattern tests compared generated schedules with the verifier and compared the fast builder with its simpler reference.
 
-Loop tests examined history across replanning boundaries, including durations, shift changes, overrides, approvals, and command failures. This mattered because individually valid short plans could still interact incorrectly across time.
+Loop tests examined behavior across replanning boundaries, including durations, approvals, shift changes, overrides, and failures. This mattered because individually acceptable plans could still interact incorrectly over time.
 
-Benchmark tests checked mode separation and resume tracking. Per-seed comparisons helped expose misleading aggregate claims and variation from time-limited search.
+The independent verifier reduced reliance on the search algorithms. It did not prove that the model represented real operations correctly or eliminate the possibility of a verifier bug.
 
-Earlier supplied full-suite output recorded **372 passing tests**. A later focused benchmark check recorded **23 passing tests**. These were separate checkpoints; they were not added together or presented as a verified final full-suite count.
+Earlier supplied full-suite output recorded **372 passing tests**. A later focused benchmark check recorded **23 passing tests**. These were separate checkpoints, not a combined final full-suite count.
 
-The audit also corrected behavior around time-of-day handling and switching-budget accounting. Simplification was kept separate from correctness: fewer lines were useful only when the behavior remained understandable and supported by checks.
+We also improved experiment tracking. Resumable scale, ladder, and robustness runs recorded source hashes, input hashes, settings, and selected environment details. Incompatible resumes were rejected.
 
-## 9. What the results showed
+These measures made the work easier to inspect and repeat. They did not turn time-limited search into a deterministic process or establish deployment readiness.
 
-The latest reviewed scale dataset contained **360 cases** across 10, 50, and 200 groups, three shortage levels, ten seeds, and four start times.
+## 11. How to run the implementation
 
-Two cases were identified as interrupted by laptop sleep. Excluding them left **358 cases for interpretation**. Their values were not replaced with expected numbers. The exclusions also needed to be reflected in any regenerated summaries and plots.
-
-At **10 groups**, B&B proved optimality in **103 of 120 cases**. CP-SAT reported integer-model optimality in **116 of 120**. Small instances therefore often allowed strong checks, but not every run completed with proof.
-
-At **50 groups**, local search frequently matched the best schedule found among the compared methods. Proof remained much harder within the configured limits. A zero median gap against the best found schedule did not mean every result was optimal; it described agreement with that particular reference.
-
-At **200 groups**, local search returned strict feasible schedules in all **120 cases** and matched the best recorded cost among the methods run there. CP-SAT was disabled, and B&B was limited to one node. The short B&B runtime at that size therefore did not demonstrate fast full optimization.
-
-Local search had a nominal 30-second budget, with about 21 seconds allocated to strict search. B&B and CP-SAT received 60-second limits where fuller searches were enabled. These settings defined the comparison; they did not establish an equal-runtime contest or universal algorithm ranking.
-
-The **ladder dataset** contained **2,160 distinct cases** across shortage, override, and tighter-policy experiments. Removing the identified sleep-affected case left **2,159 cases: 1,826 plans, 71 approval requests, and 262 escalations**. Plans included both strict and downtime-relaxed outcomes.
-
-Those counts demonstrated that the response paths were exercised. They were not a real-world success rate, and an escalation did not necessarily prove unavoidable failure. A possible second sleep could not be identified confidently from the supplied measurements alone.
-
-The supplied **robustness terminal log** contained **430 episode results**, including **80 with positive unmet demand before exclusions**. This reinforced the need to examine coverage alongside harm. An episode could appear inexpensive partly because demand remained uncovered.
-
-The complete current robustness CSV had not been reviewed, and several episodes were interrupted. We therefore did not retain the old guide’s precise percentages for feedback benefits, override costs, or stability improvements as verified final conclusions.
-
-Likewise, older 500-group, hybrid, forecast, and sensitivity figures were not merged into the newer results as though they came from one consistent experiment. Their experiment code remained part of the implementation, but their historical numbers required their own settings and evidence.
-
-| Method | 10 groups | 50 groups | 200 groups | What the result established |
-|---|---|---|---|---|
-| **Best valid greedy baseline** | Generally higher harm than the stronger search methods | Often left substantial room for improvement | Higher harm than local search in the reported comparisons | A fast reference for measuring the benefit of looking ahead |
-| **Branch-and-bound** | Proved optimality in **103/120 cases** | Full search was attempted, but no optimality proofs were recorded within the budget | Returned feasible schedules in **120/120 cases**, with a one-node search limit | Useful for small-instance proofs and lower bounds; the large-instance run was deliberately limited |
-| **Local search** | Matched the best recorded harm in **115/120 cases** | Frequently matched the best recorded schedule; optimality remained unproven | Returned strict feasible schedules and matched the best recorded harm in **120/120 cases** | Produced strong schedules across the tested sizes without generally certifying optimality |
-| **Hybrid** | Implemented and tested separately | Not included in this sweep | Not included in this sweep | Combined local search with exact search; this dataset did not establish its comparative advantage |
-| **CP-SAT** | Reported integer-model optimality in **116/120 cases** | Found feasible schedules on most cases, but no optimality proofs were recorded within the budget | Not run | Provided an independent comparison, with optimality claims limited to its integer model |
-
-## 10. What the results meant—and what they did not
-
-The experiments supported a practical division of roles. Greedy methods supplied quick baselines. Branch-and-bound supplied exact search and useful bounds. Local search supplied strong feasible schedules at larger tested sizes. The hybrid connected the latter two approaches, while CP-SAT supplied an external implementation for comparison.
-
-**Best found** and **optimal** remained different. A schedule matching the best recorded answer could still be improved by an undiscovered schedule. A valid lower bound helped quantify that uncertainty when it referred to the same model and constraint mode.
-
-Planning objective and experienced episode harm were also different. The planning objective included overshoot penalties, while episode reporting measured the harm actually accumulated from cuts and switching. Unserved shortage was reported separately. Those values should not be compared as interchangeable measures.
-
-Unserved shortage reported in kW-slots represented power deficit accumulated across slots. With 15-minute slots, multiplying by 0.25 converted that quantity to kWh.
-
-The project did not establish fairness over long periods, real-world operating safety, or readiness for deployment. Synthetic loads and assumed rules determined what the planner considered acceptable. Field validation would have been needed to establish whether those assumptions represented an actual utility.
-
-## 11. Reproducibility and running the project
-
-We added metadata checks to the resumable scale, ladder, and robustness runners. Their `.meta.json` files recorded settings, input and source hashes, and selected environment details. Incompatible resumes were rejected.
-
-This prevented accidental mixing of different experiments, but did not make clock-limited search deterministic. Sleep, machine load, and available processing time could still affect results. Robustness override resumes also reconstructed their baseline, which limited exact replay.
-
-From the repository root, installation and testing used:
+The project used Python 3.11 or newer. From the repository root:
 
 ```bash
 python -m pip install -e ".[dev,data,oracle]"
 python -m pytest -q
 ```
 
-The demo was regenerated with:
+The demo was generated with:
 
 ```bash
 python -m evaluation.export_demo
@@ -327,7 +328,7 @@ python -c "import json; from pathlib import Path; p=Path('data/processed'); d=js
 
 Opening `data/processed/demo.html` displayed the replay.
 
-The reviewed scale experiment used:
+The scale experiment used:
 
 ```bash
 python -m evaluation.run_scale --sizes 10 50 200 --seeds 10 --hours 3 10 17 20 --ls-time 30 --bnb-time 60 --bnb-full-max-n 50 --oracle-time 60 --oracle-max-n 50 --workers 1 --tiers data/processed/scenarios/tiers.json --out data/processed/benchmarks/scale_sweep.csv
@@ -341,12 +342,14 @@ python -m evaluation.run_ladder_stats --families ratio override tight --sizes 20
 python -m evaluation.run_robustness --experiments margin stability override failure feedback --n 10 --stability-n 20 --seeds 10 --episode-slots 16 --time-limit 12 --tiers data/processed/scenarios/tiers.json --out data/processed/benchmarks/robustness.csv
 ```
 
-These were long experiments. Existing tracked runs required the same settings with `--resume`; new experiments required new output paths. The original CSVs and metadata belonged together. Analysis exclusions were documented separately rather than disguised as measured replacements.
+These were long experiments. A tracked CSV belonged with its `.meta.json` file. Continuing a run required the same settings with `--resume`; a different experiment required a new output path.
 
-## 12. What we built
+## 12. What we completed
 
-We completed a prototype that connected explicit operating rules to search, checking, simulated execution, and explanation. Someone could inspect the policy, understand the objective, compare scheduling methods, see which constraints were relaxed, and replay the resulting actions.
+We completed an inspectable prototype that connected operating rules, scheduling algorithms, independent checking, simulated execution, and explanations.
 
-Our contribution was the implementation and integration of these parts for the scheduling problem, together with their evaluation. We did not claim to invent branch-and-bound, local search, or constraint programming.
+The policy expressed what was allowed. The objective expressed what was preferred. Search produced candidate schedules. Verification checked them. The ledger carried actual outcomes forward. The what-if tool and replay helped people understand the consequences.
 
-The project showed how an AI planning system could expose its assumptions and decisions instead of returning an unexplained timetable. Its strongest claim was a working, inspectable prototype with evidence on simulated cases. Its limits remained visible: the model simplified electricity operations, some results remained uncertain, and deployment on a real network had not been established.
+The algorithms were established techniques. Our contribution was their implementation, integration, and evaluation for this scheduling problem.
+
+The work supported a clear conclusion: **constraint-based planning could produce useful, explainable schedules for the modeled scenarios, and local search remained practical as the tested problem size grew.** The remaining distance to real deployment concerned the accuracy of the model, validated operating inputs, and integration with an actual electricity utility—not simply whether the program could generate a timetable.
