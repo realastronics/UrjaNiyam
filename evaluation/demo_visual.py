@@ -1,23 +1,51 @@
-from dataclasses import replace
+"""Create a presentation figure from demo.json, without running the solver again."""
+import argparse
+import json
+from pathlib import Path
 
-import matplotlib.pyplot as plt
+from evaluation.export_demo import DATA
 
-from evaluation.run_robustness import build_cfg, most_cut_feeders
-from loadshed import Policy
-from loadshed.loop import Override, run_episode
 
-cfg = build_cfg(Policy.from_yaml("configs/policy.yaml"), 10, 1, 0.20)
-base = run_episode(cfg)
-f = most_cut_feeders(base, 1)[0]
-over = run_episode(replace(cfg, events=(Override(4, 12, f, "keep"),)))
-tier = {s.id: s.tier.value for s in cfg.grid.specs}
-fig, ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
-for a, res, title in ((ax[0], base, "The tool's plan"), (ax[1], over, f"Operator keeps {f} on (slots 4-11)")):
-    ids = list(res.executed)
-    a.imshow([res.executed[i] for i in ids], cmap="Reds", aspect="auto", vmin=0, vmax=1)
-    a.set_yticks(range(len(ids)), [f"{i} ({tier[i]})" for i in ids])
-    a.set_title(f"{title}\nharm {res.metrics.total_harm:,.0f}, unserved {res.metrics.unserved_kw_slots:.0f} kW-slots")
-    a.set_xlabel("15-minute slot (red = feeder cut)")
-plt.tight_layout()
-plt.savefig("demo.png", dpi=150)
-plt.show()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, default=DATA / "demo.json")
+    parser.add_argument("--out", type=Path, default=DATA / "demo_summary.png")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--tier", default="crisis")
+    args = parser.parse_args()
+    data = json.loads(args.input.read_text(encoding="utf-8"))
+    if data.get("schema") != 2:
+        parser.error("Regenerate the demo with evaluation.export_demo first")
+    episodes = [e for e in data["episodes"] if e["seed"] == args.seed and e["tier"] == args.tier]
+    if not episodes:
+        parser.error("No matching city/scenario in this export")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+
+    city = next(c for c in data["cities"] if c["seed"] == args.seed)
+    fig, axes = plt.subplots(2, len(episodes), figsize=(6 * len(episodes), 8), squeeze=False,
+                             gridspec_kw={"height_ratios": [2, 1]}, layout="constrained")
+    for col, e in enumerate(episodes):
+        ax, chart = axes[:, col]
+        ax.imshow([e["rows"][d["id"]] for d in city["districts"]], aspect="auto",
+                  cmap=ListedColormap(["#efc776", "#233144"]), vmin=0, vmax=1)
+        ax.set_yticks(range(len(city["districts"])), [d["name"] for d in city["districts"]])
+        ax.set_xlabel(f"Recorded time steps ({data['slot_minutes']} minutes each)")
+        title = "Model plan" if e["variant"] == "plan" else f"Operator order: {e['variant']} {e['forced']}"
+        m = e["metrics"]
+        ax.set_title(f"{title}\nImpact score {m['total_harm']:,.0f} | {m['n_switches']} switches")
+        chart.plot([s["shortfall_kw"] / 1000 for s in e["steps"]], color="#c23e48", label="Shortage")
+        chart.plot([s["net_relief_kw"] / 1000 for s in e["steps"]], color="#198676", label="Net reduction")
+        chart.set_ylabel("MW")
+        chart.set_xlabel("Recorded time step")
+        chart.legend(frameon=False)
+        chart.grid(alpha=.15)
+    fig.suptitle(f"Urja Niyam · city {args.seed} · {args.tier}\nGold = supplied; dark = cut. Synthetic simulation, not live operations.")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(args.out, dpi=160)
+    plt.close(fig)
+    print(f"Wrote {args.out}")
+
+
+if __name__ == "__main__":
+    main()

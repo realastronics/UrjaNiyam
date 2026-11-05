@@ -1,252 +1,35 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Urja Niyam: plan replay</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Urja Niyam — A city, kept in balance</title>
 <style>
-:root{
-  --paper:#E7EBEF; --panel:#F7F9FB; --ink:#1B2631; --muted:#5A6978; --line:#C5CED7;
-  --lit:#F4D98C; --dark:#1B2631; --order:#2A63C8; --alert:#B83A3A; --ok:#2E7D5B; --relief:#8197AB;
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 Georgia,"Iowan Old Style","Palatino Linotype",serif}
-button,input{font:inherit}
-header{padding:28px 32px 8px;max-width:1180px;margin:0 auto}
-h1{margin:0 0 4px;font-size:30px;font-weight:700;letter-spacing:-.01em}
-.sub{margin:0;color:var(--muted);max-width:70ch}
-.wrap{max-width:1180px;margin:0 auto;padding:16px 32px 48px;display:grid;grid-template-columns:300px 1fr;gap:28px}
-@media(max-width:900px){.wrap{grid-template-columns:1fr;padding:16px}header{padding:20px 16px 4px}}
-.ui{font-family:system-ui,"Segoe UI",Roboto,sans-serif}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px 18px}
-.group{margin-bottom:18px}
-.group h3{margin:0 0 8px;font:600 14px/1.3 system-ui,"Segoe UI",sans-serif;color:var(--muted)}
-.seg{display:flex;flex-wrap:wrap;gap:6px}
-.seg button{border:1px solid var(--line);background:#fff;color:var(--ink);padding:7px 11px;border-radius:4px;cursor:pointer;text-align:left;font:500 14px/1.3 system-ui,"Segoe UI",sans-serif}
-.seg button:hover{border-color:var(--ink)}
-.seg button[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
-.seg.stack button{width:100%}
-.seg button:focus-visible,.play:focus-visible,input[type=range]:focus-visible{outline:3px solid var(--order);outline-offset:2px}
-.legend{display:grid;gap:6px;font:14px/1.3 system-ui,"Segoe UI",sans-serif;color:var(--muted)}
-.legend span{display:flex;align-items:center;gap:8px}
-.sw{width:18px;height:16px;border-radius:3px;border:1px solid var(--ink);flex:none}
-.sw.lit{background:var(--lit)} .sw.dk{background:var(--dark)}
-.sw.ord{border:2px dashed var(--order);background:transparent}
-.sw.shf{border:0;border-top:3px solid var(--alert);height:0;border-radius:0;margin-top:2px}
-.sw.rel{background:var(--relief);border-color:var(--relief)}
-.scrub{display:flex;align-items:center;gap:14px;margin-bottom:12px}
-.play{border:0;background:var(--ink);color:#fff;border-radius:4px;padding:8px 16px;cursor:pointer;font:600 14px system-ui,sans-serif;min-width:84px}
-input[type=range]{flex:1;accent-color:var(--order)}
-.now{font:600 15px system-ui,"Segoe UI",sans-serif;min-width:70px;text-align:right}
-.board{display:grid;grid-template-columns:78px repeat(16,minmax(20px,1fr));gap:3px;align-items:center;overflow-x:auto}
-.hd{font:12px system-ui,sans-serif;color:var(--muted);height:18px;white-space:nowrap}
-.fl{font:600 13px system-ui,sans-serif;white-space:nowrap}
-.fl small{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:9px;margin-left:4px;font-size:11px;background:var(--line);color:var(--ink)}
-.fl small.F{background:#CFE3D6} .fl small.C{background:#E8C3C3}
-.cell{height:30px;border-radius:3px;border:1px solid rgba(27,38,49,.35);transition:opacity .2s}
-.cell.on{background:var(--lit)} .cell.cut{background:var(--dark);border-color:var(--dark)}
-.cell.future{opacity:.3}
-.cell.cur{box-shadow:0 0 0 2px var(--alert)}
-.cell.forced{outline:2px dashed var(--order);outline-offset:1px}
-.chart{display:grid;grid-template-columns:78px repeat(16,minmax(20px,1fr));gap:3px;margin-top:16px;height:110px;align-items:end}
-.chart .lab{font:12px system-ui,sans-serif;color:var(--muted);align-self:center;line-height:1.3}
-.col{position:relative;height:100%;display:flex;align-items:flex-end}
-.col .bar{width:100%;background:var(--relief);border-radius:2px 2px 0 0}
-.col .bar.bad{background:var(--alert)}
-.col .tick{position:absolute;left:-1px;right:-1px;height:0;border-top:3px solid var(--alert)}
-.col.future{opacity:.3} .col.cur{outline:2px solid var(--alert);outline-offset:1px}
-.status{margin:14px 0 0;font:15px/1.5 system-ui,"Segoe UI",sans-serif;min-height:46px}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
-@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-family:system-ui,"Segoe UI",sans-serif}
-.card b{display:block;font-size:24px;line-height:1.2}
-.card span{font-size:13px;color:var(--muted)}
-.card.bad b{color:var(--alert)} .card.good b{color:var(--ok)}
-.cmp{margin:0 0 18px;font-family:system-ui,"Segoe UI",sans-serif}
-.cmp h3{margin:0 0 8px;font:600 14px system-ui,sans-serif;color:var(--muted)}
-.cmp .r{display:grid;grid-template-columns:200px 1fr 120px;gap:10px;align-items:center;margin:5px 0;font-size:14px}
-@media(max-width:700px){.cmp .r{grid-template-columns:1fr}}
-.cmp .t{height:16px;background:#fff;border:1px solid var(--line);border-radius:3px}
-.cmp .f{height:100%;background:var(--ink);border-radius:2px}
-.cmp .r.me .f{background:var(--order)}
-.why{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--ink);border-radius:6px;padding:16px 20px}
-.why h2{margin:0 0 8px;font-size:20px}
-.why p{margin:8px 0;max-width:74ch}
-.why .note{color:var(--muted);font-size:15px}
-.why .okmark{color:var(--ok);font-weight:700}
-.err{background:#fff;border:2px solid var(--alert);padding:16px;border-radius:6px;font-family:system-ui,sans-serif}
-code{background:#fff;border:1px solid var(--line);padding:1px 5px;border-radius:3px;font-size:14px}
-footer{max-width:1180px;margin:0 auto;padding:0 32px 32px;color:var(--muted);font:14px/1.5 system-ui,sans-serif}
-@media(prefers-reduced-motion:reduce){.cell{transition:none}}
-</style>
-</head>
-<body>
-<header>
-  <h1>Urja Niyam: replay of a load-shedding plan</h1>
-  <p class="sub">Four hours, 16 slots of 15 minutes, 10 feeders. Every plan, cost and explanation here was computed by the solver and replayed in this page. Pick a case, press Play, then see what an operator order costs.</p>
-</header>
-<div id="app" class="wrap"></div>
-<footer>Source: <code>evaluation/export_demo.py</code> runs the solver and writes <code>demo.json</code>; <code>demo_data.js</code> is the same data for this page. Tier letters for feeders are listed near the top of this page's script. These are single runs on two seeds. The 10-seed medians are in the project guide.</footer>
-
-<script src="demo_data.js"></script>
-<script>
-(function () {
-  var app = document.getElementById('app');
-  if (!window.DEMO) {
-    app.innerHTML = '<div class="err" style="grid-column:1/-1"><b>demo_data.js was not found.</b><br>Put it in the same folder as this page. Create it from the repository root with:<br><code>python -c "open(\'data/processed/demo_data.js\',\'w\').write(\'window.DEMO=\'+open(\'data/processed/demo.json\').read()+\';\')"</code></div>';
-    return;
-  }
-  var E = window.DEMO.episodes;
-  // Tier of each feeder, by seed. N (Normal) is the default. Seed 4 comes from the exported feeder table;
-  // seed 1 from the grid printed earlier. Both agree with the Critical feeder named in each explanation.
-  var TIERS = { 1: { f0: 'F', f1: 'C', f2: 'F' }, 4: { f4: 'F', f8: 'F', f9: 'C' } };
-  var tierOf = function (seed, id) { return (TIERS[seed] && TIERS[seed][id]) || 'N'; };
-  var seeds = Array.from(new Set(E.map(function (e) { return e.seed; })));
-  var tiers = ['mild', 'moderate', 'crisis'];
-  var S = { seed: seeds[0], tier: 'crisis', variant: 'plan', slot: 0, timer: null };
-
-  var get = function (seed, tier, v) { return E.find(function (e) { return e.seed === seed && e.tier === tier && e.variant === v; }); };
-  var fmt = function (n) { return Math.round(n).toLocaleString('en-US'); };
-  var fmt1 = function (n) { return n.toLocaleString('en-US', { maximumFractionDigits: 1 }); };
-  var hhmm = function (k) { var m = 17 * 60 + 15 * k; return String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
-  var winOf = function (ep) { return ep.variant === 'keep' ? [4, 11] : ep.variant === 'cut' ? [4, 7] : null; };
-
-  function runs(row) {
-    var out = [], s = -1;
-    row.forEach(function (x, k) { if (x && s < 0) s = k; if ((!x || k === row.length - 1) && s >= 0) { out.push([s, x ? k : k - 1]); s = -1; } });
-    return out;
-  }
-  function longest(rows) {
-    var best = { id: null, len: 0 };
-    Object.keys(rows).forEach(function (id) { runs(rows[id]).forEach(function (r) { var n = r[1] - r[0] + 1; if (n > best.len) best = { id: id, len: n }; }); });
-    return best;
-  }
-  function darkCount(rows) { return Object.keys(rows).filter(function (id) { return rows[id].some(Boolean); }).length; }
-
-  function variantLabel(ep) {
-    if (ep.variant === 'plan') return 'No order';
-    if (ep.variant === 'keep') return 'Keep ' + ep.forced + ' on, slots 4 to 11';
-    return 'Cut ' + ep.forced + ', slots 4 to 7';
-  }
-
-  function render() {
-    var ep = get(S.seed, S.tier, S.variant) || get(S.seed, S.tier, 'plan');
-    S.variant = ep.variant;
-    var plan = get(S.seed, S.tier, 'plan');
-    var ids = Object.keys(ep.rows), win = winOf(ep), k = S.slot;
-    var h = '';
-
-    // ---- left: controls
-    h += '<aside class="panel ui">';
-    h += '<div class="group"><h3>Grid (random seed)</h3><div class="seg">' + seeds.map(function (s) {
-      return '<button data-seed="' + s + '" aria-pressed="' + (s === S.seed) + '">Seed ' + s + '</button>'; }).join('') + '</div></div>';
-    h += '<div class="group"><h3>Shortfall (share of demand)</h3><div class="seg">' + tiers.map(function (t) {
-      var e = get(S.seed, t, 'plan'); return '<button data-tier="' + t + '" aria-pressed="' + (t === S.tier) + '">' + t + ' ' + (e ? (Math.round(e.ratio * 1000) / 10) + '%' : '') + '</button>'; }).join('') + '</div></div>';
-    h += '<div class="group"><h3>Operator order</h3><div class="seg stack">' + ['plan', 'keep', 'cut'].map(function (v) {
-      var e = get(S.seed, S.tier, v); if (!e) return '';
-      return '<button data-variant="' + v + '" aria-pressed="' + (v === S.variant) + '">' + variantLabel(e) + '</button>'; }).join('') + '</div></div>';
-    h += '<div class="legend"><span><i class="sw lit"></i>Feeder on, power supplied</span><span><i class="sw dk"></i>Feeder cut, no power</span>' +
-         '<span><i class="sw ord"></i>Window of the operator order</span><span><i class="sw rel"></i>Relief from cut feeders (kW)</span>' +
-         '<span><i class="sw shf"></i>Shortfall to cover (kW)</span>' +
-         '<span>F = flexible, cut first. N = normal. C = critical, never cut without approval.</span></div>';
-    h += '</aside>';
-
-    // ---- right: board
-    h += '<section>';
-    h += '<div class="scrub ui"><button class="play" id="play">' + (S.timer ? 'Pause' : 'Play') + '</button>' +
-         '<input id="slot" type="range" min="0" max="15" value="' + k + '" aria-label="Time slot">' +
-         '<span class="now">' + hhmm(k) + '</span></div>';
-    h += '<div class="board" role="img" aria-label="Feeder status by time slot"><span class="hd"></span>';
-    for (var c = 0; c < 16; c++) h += '<span class="hd">' + (c % 4 === 0 ? hhmm(c) : '') + '</span>';
-    ids.forEach(function (id) {
-      h += '<span class="fl">' + id + '<small class="' + tierOf(S.seed, id) + '">' + tierOf(S.seed, id) + '</small></span>';
-      ep.rows[id].forEach(function (x, t) {
-        var cls = 'cell ' + (x ? 'cut' : 'on') + (t > k ? ' future' : '') + (t === k ? ' cur' : '') +
-                  (win && id === ep.forced && t >= win[0] && t <= win[1] ? ' forced' : '');
-        h += '<span class="' + cls + '"></span>';
-      });
-    });
-    h += '</div>';
-
-    var max = Math.max.apply(null, ep.steps.map(function (s) { return Math.max(s[0], s[1]); })) || 1;
-    h += '<div class="chart" aria-hidden="true"><span class="lab">kW</span>';
-    ep.steps.forEach(function (s, t) {
-      h += '<div class="col' + (t > k ? ' future' : '') + (t === k ? ' cur' : '') + '"><div class="bar' + (s[2] > 0 ? ' bad' : '') + '" style="height:' + (100 * s[1] / max) +
-           '%"></div><div class="tick" style="bottom:' + (100 * s[0] / max) + '%"></div></div>';
-    });
-    h += '</div>';
-
-    var st = ep.steps[k], cutNow = ids.filter(function (id) { return ep.rows[id][k]; });
-    h += '<p class="status"><b>Slot ' + k + ' (' + hhmm(k) + ').</b> Shortfall ' + fmt1(st[0]) + ' kW, relief ' + fmt1(st[1]) + ' kW: ' +
-         (st[2] > 0 ? '<b style="color:var(--alert)">' + fmt1(st[2]) + ' kW not covered.</b>' : '<b style="color:var(--ok)">covered.</b>') + ' ' +
-         (cutNow.length ? 'Dark now: ' + cutNow.join(', ') + '.' : 'No feeder is cut in this slot.') +
-         ' The tool cuts whole feeders, so relief is usually larger than the shortfall; it only has to reach it.</p>';
-
-    // ---- cards
-    var rungs = Array.from(new Set(ep.steps.map(function (s) { return s[3]; })));
-    h += '<div class="cards">' +
-      '<div class="card"><b>' + fmt(ep.harm) + '</b><span>total harm suffered</span></div>' +
-      '<div class="card ' + (ep.unserved > 0 ? 'bad' : 'good') + '"><b>' + fmt(ep.unserved) + '</b><span>kW-slots not covered</span></div>' +
-      '<div class="card"><b>' + ep.switches + '</b><span>breaker operations</span></div>' +
-      '<div class="card"><b>' + (rungs.length === 1 && rungs[0] === 0 ? 'Rung 0' : 'Rung ' + rungs.join(', ')) + '</b><span>' + (rungs.length === 1 && rungs[0] === 0 ? 'every rule held in all 16 plans' : 'rules were relaxed') + '</span></div></div>';
-
-    // ---- price of the order
-    var vs = ['plan', 'keep', 'cut'].map(function (v) { return get(S.seed, S.tier, v); }).filter(Boolean);
-    var top = Math.max.apply(null, vs.map(function (e) { return e.harm; }));
-    h += '<div class="cmp"><h3>Total harm for the same four hours</h3>' + vs.map(function (e) {
-      return '<div class="r' + (e.variant === ep.variant ? ' me' : '') + '"><span>' + variantLabel(e) + '</span><span class="t"><span class="f" style="display:block;width:' + (100 * e.harm / top) + '%"></span></span><span>' +
-             fmt(e.harm) + (e.variant === 'plan' ? '' : ' (' + (e.harm / plan.harm).toFixed(1) + ' times)') + '</span></div>'; }).join('') + '</div>';
-
-    // ---- explanation
-    h += '<article class="why"><h2>' + (ep.variant === 'plan' ? 'Why this plan?' : 'What did the order cost?') + '</h2>';
-    if (ep.variant === 'plan') {
-      var list = ids.filter(function (id) { return ep.rows[id].some(Boolean); }).map(function (id) {
-        return id + ' (' + tierOf(S.seed, id) + ') goes dark in slots ' + runs(ep.rows[id]).map(function (r) { return r[0] + ' to ' + r[1]; }).join(' and ') + '.'; });
-      h += '<p>' + (list.length ? list.join(' ') : 'No feeder needs to be cut.') + ' No feeder stays dark for more than ' + longest(ep.rows).len + ' slots, and the verifier accepted every plan.</p>';
-      var priced = Object.keys(ep.price || {}), held = Object.keys(ep.why || {});
-      h += '<p>';
-      priced.forEach(function (id) { h += '<b>' + id + '</b> is cut now. Keeping it on instead would add ' + fmt(ep.price[id]) + ' harm. '; });
-      held.forEach(function (id) { h += '<b>' + id + '</b> stays on: ' + ep.why[id].charAt(0).toLowerCase() + ep.why[id].slice(1) + '. '; });
-      h += 'The other ' + (ids.length - priced.length - held.length) + ' feeders stay on because the shortfall is already covered.</p>';
-      var now0 = ids.filter(function (id) { return ep.rows[id][0]; }).sort().join(), pr = priced.slice().sort().join();
-      if (now0 !== pr) h += '<p class="note">The explainer re-solved the opening problem with a longer time limit than the live loop uses (about one second per attempt). Here that gave a different first-slot choice (' + (pr || 'none') + ') from what the loop cut (' + (now0 || 'none') + '). Both plans passed the verifier. This is the solver-budget effect described in the guide.</p>';
-      var same = tiers.filter(function (t) { var o = get(S.seed, t, 'plan'); return t !== S.tier && o && JSON.stringify(o.rows) === JSON.stringify(ep.rows); });
-      if (same.length) h += '<p class="note">This is the same plan as in the ' + same.join(' and ') + ' case. Cheap flexible feeders can cover even this shortfall, so only the shortfall line moved.</p>';
-      h += '<p class="note">Flexible feeders carry the lowest harm weight and few consumers, so the tool cuts them first and rotates between them so that no one stays dark for long.</p>';
-    } else {
-      var f = ep.forced, ok = ep.variant === 'keep' ? ep.rows[f].slice(win[0], win[1] + 1).every(function (x) { return x === 0; })
-                                                      : ep.rows[f].slice(win[0], win[1] + 1).every(function (x) { return x === 1; });
-      h += '<p>Order: ' + (ep.variant === 'keep' ? 'keep <b>' + f + '</b> on' : 'cut <b>' + f + '</b>') + ' in slots ' + win[0] + ' to ' + win[1] + '. ' +
-           (ok ? '<span class="okmark">The tool obeyed it in every slot of the window.</span>' : 'The order was not fully obeyed.') +
-           ' The shortfall was ' + (ep.unserved > 0 ? 'not always covered (' + fmt(ep.unserved) + ' kW-slots short).' : 'still covered in every slot.') + '</p>';
-      var a = longest(plan.rows), b = longest(ep.rows);
-      h += '<p>The price: harm went from ' + fmt(plan.harm) + ' to ' + fmt(ep.harm) + ', <b>' + (ep.harm / plan.harm).toFixed(1) + ' times</b>. ' +
-           darkCount(ep.rows) + ' feeders went dark (' + darkCount(plan.rows) + ' without the order), the longest dark run is ' + b.len + ' slots on ' + b.id +
-           ' (' + a.len + ' without the order), and breaker operations went from ' + plan.switches + ' to ' + ep.switches + '.</p>';
-      h += '<p class="note">Why it costs more: each extra slot in the dark hurts 50% more than the one before, so pushing the cut onto other feeders for longer, or onto feeders with more consumers, raises the total. The what-if tool shows this price before the order is applied.</p>';
-      h += '<p class="note">This is one seed. Over 10 seeds the median cost of forcing one feeder on was 4.7 times and of forcing one cut 5.4 times, with single cases from 1.9 to 240 times.</p>';
-    }
-    h += '</article></section>';
-    app.innerHTML = h;
-  }
-
-  function stop() { if (S.timer) { clearInterval(S.timer); S.timer = null; } }
-  app.addEventListener('click', function (e) {
-    var b = e.target.closest('button'); if (!b) return;
-    if (b.dataset.seed) { S.seed = +b.dataset.seed; stop(); }
-    else if (b.dataset.tier) { S.tier = b.dataset.tier; stop(); }
-    else if (b.dataset.variant) { S.variant = b.dataset.variant; stop(); }
-    else if (b.id === 'play') {
-      if (S.timer) stop(); else {
-        if (S.slot >= 15) S.slot = 0;
-        S.timer = setInterval(function () { if (S.slot >= 15) { stop(); } else { S.slot++; } render(); }, 700);
-      }
-    } else return;
-    render();
-  });
-  app.addEventListener('input', function (e) { if (e.target.id === 'slot') { stop(); S.slot = +e.target.value; render(); var s = document.getElementById('slot'); if (s) s.focus(); } });
-  render();
-})();
-</script>
-</body>
-</html>
+:root{color-scheme:dark;--bg:#080f1a;--panel:#101c2b;--line:#25364b;--text:#edf2f7;--muted:#a3b5c9;--gold:#f2cd83;--mint:#72dbc2;--red:#ff8792}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}button,select,input{font:inherit}button,select{color:var(--text);background:#17283b;border:1px solid #3a516a;border-radius:8px;padding:10px 14px;cursor:pointer}button:hover,select:hover{border-color:var(--mint)}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-offset:3px}button[aria-pressed=true]{background:var(--mint);color:#071a18;border-color:var(--mint)}header{padding:24px 4vw 18px;display:flex;justify-content:space-between;gap:20px;align-items:center;border-bottom:1px solid var(--line)}.brand{font-weight:750;font-size:23px;letter-spacing:-1px}.eyebrow{color:var(--mint);font-size:11px;letter-spacing:2px;text-transform:uppercase}.muted,small{color:var(--muted)}main{max-width:1600px;margin:auto;padding:28px 4vw}h1{font-size:clamp(28px,3vw,44px);line-height:1.15;letter-spacing:-1.4px;margin:8px 0 14px}h2{font-size:19px;margin:0 0 12px}p{margin:6px 0 15px}.intro{max-width:780px}.toolbar{display:flex;gap:18px;flex-wrap:wrap;align-items:end;margin:24px 0}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}select{min-width:180px}.badge{border:1px solid var(--line);border-radius:30px;padding:6px 11px;font-size:12px;color:var(--mint)}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}.maphead{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:17px 20px}.mapwrap{background:radial-gradient(ellipse at 50% 30%,#193047,#091522 75%)}svg#city{display:block;width:100%;height:auto}.legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px 20px;font-size:12px;color:var(--muted)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.gold{background:var(--gold)}.dark{background:#68788d}.red{background:var(--red)}aside{padding:22px}.metric{padding:15px 0;border-bottom:1px solid var(--line)}.metric strong{display:block;font-size:30px;letter-spacing:-1px}.metric span{font-size:12px;color:var(--muted)}#coverage{margin:14px 0;padding:12px;border-radius:8px;background:#142f30;color:var(--mint)}.playback{display:flex;align-items:center;gap:16px;padding:16px 20px;border-top:1px solid var(--line)}input[type=range]{flex:1;min-width:70px;accent-color:var(--mint)}.district{cursor:pointer;outline:none}.district:focus .land,.district:hover .land{stroke:var(--mint);stroke-width:3}.district .land{stroke:#3b5268;stroke-width:1.5}.district.selected .land{stroke:var(--gold);stroke-width:3}.bottom{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.pad{padding:22px}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:10px 6px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:500}#schedule{overflow:auto}.slot{min-width:15px;width:4%;padding:0;border:2px solid var(--panel);height:24px}.on{background:var(--gold)}.off{background:#435269}.now{outline:2px solid var(--mint);outline-offset:-2px}.flow{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.flow span{background:#192b3e;padding:10px;border-radius:6px}.cityview .operator{display:none}.cityview .layout{grid-template-columns:minmax(0,1fr) 270px}.note{font-size:12px;color:var(--muted)}footer{border-top:1px solid var(--line);margin-top:26px;padding-top:16px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}@media(max-width:850px){header{align-items:start;flex-direction:column}.layout,.cityview .layout,.bottom{grid-template-columns:1fr}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:12px}.toolbar>*{flex:1}select{width:100%;min-width:0}main{padding:20px 4vw}.maphead{align-items:start;flex-direction:column}aside{padding:18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style></head><body>
+<header><div><div class="brand">URJA NIYAM <span style="color:var(--mint)">/</span></div><div class="muted">A city, kept in balance</div></div><nav aria-label="Demo views"><button id="operatorView" aria-pressed="true">Operator desk</button> <button id="cityView" aria-pressed="false">City at night</button></nav><span class="badge">SIMULATION · RECORDED REPLAY</span></header>
+<main><div id="error" hidden class="panel pad" role="alert"></div><div id="app" hidden><div class="intro"><div class="eyebrow" id="kicker">Decision support, one step at a time</div><h1 id="headline">Less power available.<br>A more thoughtful plan.</h1><p id="intro" class="muted">Choose a shortage and compare a recorded plan with an operator order. The model decides which electricity supply groups to pause, while keeping protected services and operating rules in mind.</p></div>
+<div class="toolbar"><label>Illustrative city<select id="seed"></select></label><label>Peak shortage · share of demand<select id="tier"></select></label><label>Recorded operator decision<select id="variant"></select></label></div>
+<p class="note">Each choice loads a separately computed episode. These controls do not send commands or run a new solve. The city layout and buildings are illustrative; each district represents one electricity supply group.</p>
+<div class="layout"><section class="panel"><div class="maphead"><div><h2 style="margin:0">The city right now</h2><span class="muted" id="mapSubtitle"></span></div><span class="badge" id="clock"></span></div><div class="mapwrap"><svg id="city" viewBox="0 0 1000 660" role="img" aria-label="Illustrative city map. Select a district to inspect its electricity supply."></svg></div><div class="legend"><span><i class="dot gold"></i>Supply on</span><span><i class="dot dark"></i>Supply cut</span><span>◇ Protected group</span><span>Click a district to understand its impact</span></div><div class="playback"><button id="play">Play</button><label for="time" class="muted">Time</label><input id="time" type="range" min="0" value="0" aria-label="Replay time"><span id="position"></span></div></section>
+<aside class="panel"><div class="eyebrow">This time step</div><div id="coverage" role="status"></div><div class="metrics"><div class="metric"><span>Power shortage</span><strong id="shortage"></strong></div><div class="metric"><span>Net power reduction</span><strong id="relief"></strong></div><div class="metric"><span>Supply groups cut</span><strong id="cuts"></strong></div><div class="metric"><span>Connections in cut groups</span><strong id="connections"></strong></div></div><p class="note" style="margin-top:14px">Connections are modelled customer accounts, not a count of people or homes. Restoring supply can briefly increase demand, so net reduction can fall.</p><div id="decision" class="operator note"></div></aside></div>
+<div class="bottom"><section class="panel pad"><div class="eyebrow">Selected district</div><h2 id="districtName"></h2><p id="districtStory"></p><p id="districtDetails" class="muted"></p><p id="order" class="note"></p></section><section class="panel pad"><div class="eyebrow">The whole episode</div><h2>What did the decision change?</h2><div id="comparison"></div><p class="note">Impact score combines weighted interruptions and switching. Lower is better within the same city and shortage. It is not money, people harmed, or proof of an optimal plan.</p></section></div>
+<section class="panel pad operator" style="margin-top:18px"><h2>When each district lost supply</h2><p class="note">Gold means on. Dark means cut. The outlined column is the current step. Times and totals cover only this recorded episode.</p><div id="schedule"></div></section>
+<section class="panel pad" style="margin-top:18px"><h2>How the model made this happen</h2><p>First, it estimated demand and the missing power. Then it searched for a lower-impact schedule under the configured rules. A separate verifier checked proposed schedules. The simulator applied the next step, updated the history and planned again.</p><div class="flow"><span>Demand + shortage + rules</span><span>Search + verification</span><span>Next-step decision</span><span>Updated history → replan</span></div><p class="muted">Flexible groups have a lower interruption penalty. Normal groups have a higher one. Critical groups need explicit approval before they can be cut; approvals are declined in this demo. If a strict plan cannot be found, the fallback ladder can relax downtime limits, request approval or escalate an uncovered shortage. A time limit is not proof that no valid plan exists.</p><p class="note" id="provenance"></p></section>
+<footer>Urja Niyam is a scheduling and decision-support prototype. It does not model grid frequency, voltage, network power flow or real breaker control. A lit block means its simulated supply group is on; it does not imply measured electricity use in every building.</footer></div></main>
+<script src="demo_data.js"></script><script>
+'use strict';
+const $=id=>document.getElementById(id), D=window.DEMO;
+const fmt=n=>Math.round(n).toLocaleString(), mw=n=>(n/1000).toFixed(2)+' MW';
+let slot=0, selected=null, timer=null, city, ep;
+function text(id,value){$(id).textContent=value}
+function option(value,label){const o=document.createElement('option');o.value=value;o.textContent=label;return o}
+function time(i){const m=(D.start_slot+i)*D.slot_minutes;return String(Math.floor(m/60)%24).padStart(2,'0')+':'+String(m%60).padStart(2,'0')}
+function stop(){clearInterval(timer);timer=null;text('play','Play')}
+function populateVariants(){const old=$('variant').value;$('variant').replaceChildren();D.episodes.filter(e=>e.seed===Number($('seed').value)&&e.tier===$('tier').value).forEach(e=>{const d=city.districts.find(d=>d.id===e.forced);$('variant').append(option(e.variant,e.variant==='plan'?'Model plan':(e.variant==='keep'?'Keep on: ':'Cut: ')+d.name))});if([...$('variant').options].some(o=>o.value===old))$('variant').value=old;loadEpisode()}
+function loadEpisode(){stop();ep=D.episodes.find(e=>e.seed===city.seed&&e.tier===$('tier').value&&e.variant===$('variant').value);slot=0;$('time').value=0;draw()}
+function svgEl(tag,attrs={},content){const n=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(content!==undefined)n.textContent=content;return n}
+function map(){const svg=$('city');svg.replaceChildren();svg.append(svgEl('path',{d:'M-60 490 Q240 350 480 490 T1100 420 L1100 700 L-60 700 Z',fill:'#0d3449'}));svg.append(svgEl('path',{d:'M-60 480 Q240 340 480 480 T1100 410',fill:'none',stroke:'#326279','stroke-width':3}));for(let y of [48,232,416]){svg.append(svgEl('path',{d:`M25 ${y} L975 ${y}`,stroke:'#2a3c4f','stroke-width':18}));svg.append(svgEl('path',{d:`M25 ${y} L975 ${y}`,stroke:'#6b6b58','stroke-width':1,'stroke-dasharray':'8 12'}))}for(let x of [45,225,405,585,765,945])svg.append(svgEl('path',{d:`M${x} 30 L${x} 435`,stroke:'#2a3c4f','stroke-width':14}));
+city.districts.forEach((d,i)=>{const x=62+(i%5)*180,y=70+Math.floor(i/5)*184,off=ep.rows[d.id][slot]===1;const g=svgEl('g',{class:'district'+(d.id===selected?' selected':''),tabindex:0,role:'button','aria-label':d.name+', '+(off?'supply cut':'supply on'),'aria-pressed':String(d.id===selected)});g.append(svgEl('rect',{class:'land',x,y,width:146,height:142,rx:14,fill:off?'#152333':'#24363c'}));for(let b=0;b<9;b++){const bx=x+13+(b%3)*43,by=y+13+Math.floor(b/3)*32;g.append(svgEl('rect',{x:bx+3,y:by+4,width:31,height:24,rx:2,fill:'#081321'}));g.append(svgEl('rect',{x:bx,y:by,width:31,height:24,rx:2,fill:off?'#304052':'#48554e'}));for(let w=0;w<6;w++)g.append(svgEl('rect',{x:bx+5+w%3*8,y:by+5+Math.floor(w/3)*10,width:4,height:5,fill:off?'#435366':'#f2cd83',opacity:off?'.5':'.95'}))}g.append(svgEl('text',{x:x+12,y:y+126,fill:off?'#a3b5c9':'#f2cd83','font-size':12},`${d.tier==='critical'?'◇ ':''}${d.id.toUpperCase()} · ${off?'CUT':'ON'}`));const choose=()=>{selected=d.id;draw()};g.onclick=choose;g.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();svg.querySelectorAll('.district')[i].focus()}};svg.append(g)});svg.append(svgEl('text',{x:65,y:552,fill:'#91b1c5','font-size':16,'letter-spacing':3},'ONE CITY. SHARED POWER.'));svg.append(svgEl('text',{x:65,y:580,fill:'#7999af','font-size':13},'Illustrative districts · buildings are symbols, not individual customers'));}
+function draw(){const s=ep.steps[slot],off=city.districts.filter(d=>ep.rows[d.id][slot]);text('clock',time(slot));text('position',`${slot+1} / ${D.slots}`);text('mapSubtitle',`${time(0)}–${time(D.slots)} · ${D.slot_minutes}-minute steps · city ${city.seed}`);text('shortage',mw(s.shortfall_kw));text('relief',mw(s.net_relief_kw));text('cuts',`${off.length} / ${city.districts.length}`);text('connections',fmt(off.reduce((a,d)=>a+d.connections,0)));text('coverage',s.unserved_kw>.1?`${mw(s.unserved_kw)} still uncovered`:'Shortage covered at this step');$('coverage').style.color=s.unserved_kw>.1?'var(--red)':'var(--mint)';text('decision',`Recorded status: ${s.status}. Fallback rung ${s.rung}. ${s.approvals_requested} approvals requested; ${s.approvals_granted} granted. Coverage alone does not mean all strict rules were retained.`);
+map();const d=city.districts.find(d=>d.id===selected),cut=ep.rows[d.id][slot],minutes=ep.rows[d.id].reduce((a,b)=>a+b,0)*D.slot_minutes;text('districtName',d.name);text('districtStory',cut?'Supply is paused here in this recorded step. Its buildings go dark in the illustration.':'Supply stays on here in this recorded step.');text('districtDetails',`${d.tier[0].toUpperCase()+d.tier.slice(1)} priority · ${fmt(d.connections)} modelled connections · ${mw(d.load_kw[slot])} baseline demand. Total recorded interruption: ${minutes} minutes.`);const o=ep.overrides[0];text('order',o?`Operator order: ${o.action==='keep'?'keep on':'cut'} ${city.districts.find(d=>d.id===o.feeder_id).name}, ${time(o.start)}–${time(o.end)}. The order can affect decisions elsewhere and later.`:'No operator order. The schedule reflects the configured priorities, operating rules and search result.');
+const base=D.episodes.find(e=>e.seed===ep.seed&&e.tier===ep.tier&&e.variant==='plan');$('comparison').replaceChildren();const table=document.createElement('table');const rows=[['Measure','Model plan','Selected case'],['Impact score',fmt(base.metrics.total_harm),fmt(ep.metrics.total_harm)],['Switch operations',base.metrics.n_switches,ep.metrics.n_switches],['Uncovered energy',fmt(base.metrics.unserved_kw_slots*D.slot_minutes/60)+' kWh',fmt(ep.metrics.unserved_kw_slots*D.slot_minutes/60)+' kWh']];rows.forEach((r,i)=>{const tr=document.createElement('tr');r.forEach(v=>{const td=document.createElement(i?'td':'th');td.textContent=v;tr.append(td)});table.append(tr)});$('comparison').append(table);
+$('schedule').replaceChildren();const st=document.createElement('table');city.districts.forEach(d=>{const tr=document.createElement('tr'),th=document.createElement('th');th.textContent=d.name;tr.append(th);ep.rows[d.id].forEach((cut,i)=>{const td=document.createElement('td');td.className='slot '+(cut?'off':'on')+(i===slot?' now':'');td.title=`${d.name}, ${time(i)}: ${cut?'cut':'on'}`;td.setAttribute('aria-label',td.title);tr.append(td)});st.append(tr)});$('schedule').append(st);}
+try{if(!D||D.schema!==2||!D.episodes.length)throw Error('Demo data is missing or uses the old format. Run python -m evaluation.export_demo, then keep demo.html beside demo_data.js.');D.cities.forEach(c=>$('seed').append(option(c.seed,'City '+c.seed)));const first=D.cities[0].seed;D.episodes.filter(e=>e.seed===first&&e.variant==='plan').forEach(e=>$('tier').append(option(e.tier,`${e.tier} · ${(e.ratio*100).toFixed(1)}%`)));$('time').max=D.slots-1;$('seed').onchange=()=>{city=D.cities.find(c=>c.seed===Number($('seed').value));selected=city.districts[0].id;populateVariants()};$('tier').onchange=populateVariants;$('variant').onchange=loadEpisode;$('time').oninput=()=>{stop();slot=Number($('time').value);draw()};$('play').onclick=()=>{if(timer){stop();return}if(slot===D.slots-1)slot=0;text('play','Pause');timer=setInterval(()=>{$('time').value=slot;draw();if(slot===D.slots-1)stop();else slot++},1100)};for(const id of ['operatorView','cityView'])$(id).onclick=()=>{const publicView=id==='cityView';document.body.classList.toggle('cityview',publicView);$('operatorView').setAttribute('aria-pressed',String(!publicView));$('cityView').setAttribute('aria-pressed',String(publicView));text('kicker',publicView?'The human side of a scheduling decision':'Decision support, one step at a time');text('headline',publicView?'When power is short, every choice reaches someone.':'Less power available. A more thoughtful plan.');text('intro',publicView?'Watch the city through a shortage. Some districts pause their electricity use so the system can cover the gap. Select a district to see what it experiences.':'Choose a shortage and compare a recorded plan with an operator order. The model decides which electricity supply groups to pause, while keeping protected services and operating rules in mind.')};text('provenance',`Generated ${D.generated_at.slice(0,10)} from the configured scenario thresholds. Planning horizon: ${D.horizon_slots*D.slot_minutes/60} hours; safety margin: ${D.safety_margin*100}%. Source and input hashes are included in demo.json. Replay outcomes are scenario evidence, not a project-wide validation score.`);$('app').hidden=false;$('seed').onchange();}catch(e){$('error').hidden=false;text('error',e.message)}
+</script></body></html>
